@@ -327,7 +327,9 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - **Public repo**, default branch **`main`**. Conventional Commits. **PR per milestone.**
 - **Dependabot**: weekly, grouped per ecosystem (nuget, npm, github-actions, dotnet-sdk; docker
   added with the Dockerfiles).
-- **CodeQL default setup** (C#, TypeScript, Actions).
+- **CodeQL advanced setup** (`.github/workflows/codeql.yml`; C#, TypeScript, Actions;
+  `security-and-quality` queries; C# uses `build-mode: none`). Runs on **every** PR, pushes to
+  `main` and weekly. See the code-scanning note below for why not default setup.
 
 #### Branch protection — a repository **ruleset** on `main`, kept as code
 - Defined in `.github/rulesets/main.json` and applied with
@@ -343,12 +345,20 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 | Required status checks `backend`, `frontend` | on, **pinned to the GitHub Actions app** (integration 15368) | A status posted by another integration under the same name can't satisfy the check; `docker` added in milestone 6 |
 | Require branches up to date | on | PRs are tested against current `main`, not a stale base |
 | Require linear history | on | Pairs with the merge methods below |
-| Code scanning (CodeQL) | high-or-higher security alerts / errors block merge | Added after CodeQL's first analysis completed |
+| Code scanning (CodeQL) | high-or-higher security alerts / errors block merge | Requires CodeQL results on every PR — hence advanced setup (below) |
 | Bypass list | **empty** | Rules apply to the admin too; changing the ruleset is itself audited |
 
 - `require_extra_approval_for_unattributed_changes` is a newer, undocumented ruleset parameter that
   GitHub defaults to `true`; left at the default (our commits are attributed) and verified it does
-  not block normal merges.
+  not block normal merges (PR #5 merged under it).
+
+**Lesson — code-scanning gate vs. CodeQL default setup.** The first version of the ruleset used
+CodeQL *default* setup. Default setup did not analyse PR #5 (JSON/Markdown only), so the
+`code_scanning` rule waited for results that never came and **blocked a docs-only PR
+indefinitely**. Fix: rule temporarily removed, CodeQL moved to an advanced-setup workflow that
+runs on every PR, default setup disabled (the two can't coexist), and the rule re-added once the
+workflow had produced results. Takeaway: a merge gate has to be exercised against *every kind*
+of PR (code, docs, config, Dependabot) before it's considered done.
 
 #### Merge settings
 - **Merge commits off** (linear history). **Squash** (PR title + body) for Dependabot/fix-up PRs;
