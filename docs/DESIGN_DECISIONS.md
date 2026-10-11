@@ -304,11 +304,36 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - No Makefile/task runner: not available on Windows by default; explicit README commands are clearer.
 
 ### 6.2 GitHub
-- **Public repo**, default branch **`main`**.
-- **PR per milestone** into `main` with required CI checks (branch protection) — the history
-  shows the process being evaluated. Conventional Commits.
-- **Dependabot**: weekly, grouped per ecosystem (nuget, npm, github-actions, docker).
-- **CodeQL default setup** enabled in repo settings (C# + TypeScript).
+- **Public repo**, default branch **`main`**. Conventional Commits. **PR per milestone.**
+- **Dependabot**: weekly, grouped per ecosystem (nuget, npm, github-actions, dotnet-sdk; docker
+  added with the Dockerfiles).
+- **CodeQL default setup** (C#, TypeScript, Actions).
+
+#### Branch protection — a repository **ruleset** on `main`, kept as code
+- Defined in `.github/rulesets/main.json` and applied with
+  `gh api -X POST repos/{owner}/{repo}/rulesets --input .github/rulesets/main.json` (use `PUT
+  …/rulesets/{id}` to update). Rulesets over classic branch protection: auditable bypasses,
+  layerable, visible to readers of a public repo, and reproducible from a checked-in file.
+
+| Rule | Setting | Why |
+|---|---|---|
+| Restrict deletions / block force pushes | on | `main` can't be deleted or have history rewritten |
+| Require a pull request | on, **0 approvals** | Solo repo — GitHub doesn't allow approving your own PR, so ≥1 would force a bypass on every merge (see deferrals for team settings) |
+| Require conversation resolution | on | Open review threads (incl. AI code-review comments) block merge |
+| Required status checks `backend`, `frontend` | on, **pinned to the GitHub Actions app** (integration 15368) | A status posted by another integration under the same name can't satisfy the check; `docker` added in milestone 6 |
+| Require branches up to date | on | PRs are tested against current `main`, not a stale base |
+| Require linear history | on | Pairs with the merge methods below |
+| Code scanning (CodeQL) | high-or-higher security alerts / errors block merge | Added after CodeQL's first analysis completed |
+| Bypass list | **empty** | Rules apply to the admin too; changing the ruleset is itself audited |
+
+- `require_extra_approval_for_unattributed_changes` is a newer, undocumented ruleset parameter that
+  GitHub defaults to `true`; left at the default (our commits are attributed) and verified it does
+  not block normal merges.
+
+#### Merge settings
+- **Merge commits off** (linear history). **Squash** (PR title + body) for Dependabot/fix-up PRs;
+  **rebase** for milestone PRs so the curated test-first commit sequence stays visible on `main`.
+- Delete head branches on merge; "suggest updating PR branches" on; auto-merge off.
 
 ### 6.3 CI (`.github/workflows/ci.yml`, PRs + pushes to `main`)
 - `permissions: contents: read`; `concurrency` with `cancel-in-progress`; **actions pinned to
@@ -368,6 +393,9 @@ Things consciously **not** built for the MVP, why, and what would trigger revisi
 | .NET Aspire orchestration | Extra SDK workload for reviewers; Compose already gives one-command run | Multiple services / need for the Aspire dashboard & telemetry |
 | CD / deployment, image publishing (GHCR) | No target environment | A hosting target exists — publish images on tags |
 | Release versioning / changelog automation | Single MVP release | Regular releases (e.g. release-please) |
+| Required PR approvals, stale-review dismissal, CODEOWNERS review | Solo repo — self-approval isn't possible | Second contributor joins: 1+ approvals, dismiss stale, require code owners |
+| Required signed commits | GitHub's "rebase and merge" produces unsigned commits, conflicting with the merge strategy; optional SSH signing locally | Team policy requires provenance — switch to squash-only + required signatures |
+| Dependabot auto-merge | Want eyes on dependency updates while the project is young | Stable test suite — auto-merge green patch updates |
 
 ---
 
