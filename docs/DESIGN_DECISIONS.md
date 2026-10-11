@@ -87,6 +87,18 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - Therefore `YahooMarketDataProvider` applies them and returns **clean bars**; the Application
   layer never knows the upstream was messy. Each filter is still its own small class
   (`IBarFilter`) with focused unit tests.
+- Consequence for the domain model: `IntradayBar` has **non-nullable** OHLC/volume. Incomplete
+  bars are dropped in Infrastructure before mapping, so "a bar is complete" is an invariant the
+  type system enforces rather than something the aggregator must re-check.
+
+### 2.2a `StockSymbol` value object (domain primitive)
+- Symbols are parsed once at the edge into a `StockSymbol` (trim, upper-case, max 20 chars,
+  `[A-Z0-9.\-^=]`) and passed as that type everywhere after — no raw strings reach the provider,
+  and validation lives in one place shared by the endpoint and any future callers. Avoids
+  primitive obsession; equality is by normalised value (`tsla` == `TSLA`).
+- `DailySummaryAggregator` is a **static pure function** (no I/O, no state): there is nothing to
+  mock or swap, so an interface would be ceremony. `DailySummaryService` (behind
+  `IDailySummaryService`) orchestrates provider → aggregator and is the seam the API depends on.
 
 ### 2.3 Error handling: hybrid (exceptions for upstream failures, values for validation)
 - **Input validation** (bad symbol format) is an expected user mistake → handled as a value at
@@ -245,8 +257,16 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   hit / stampede / negative caching.
 - **Live Yahoo contract test** tagged `Category=Live`, **excluded from PR CI**, run nightly +
   on demand as an early warning for upstream shape changes.
-- Coverage via coverlet + ReportGenerator — **reported, not gated** (thresholds encourage
+- Coverage via MTP CodeCoverage + ReportGenerator — **reported, not gated** (thresholds encourage
   coverage-chasing tests).
+  - Each test project writes to its **own** `TestResults/` (set via
+    `TestingPlatformCommandLineArguments` in `tests/Directory.Build.props`). With a shared results
+    directory, a second test project silently **overwrote** the first's `coverage.cobertura.xml`
+    (found when Application.Tests was added).
+  - `backend/coverage.settings.xml` excludes compiler/source-generated code (OpenAPI and Regex
+    source generators, `[CompilerGenerated]`) so the number reflects hand-written code only
+    (the overall figure went from 26% to 95.6% line / 100% branch once generated code was
+    excluded).
 
 ### 4.3 Frontend: Vitest + React Testing Library + user-event + MSW
 - MSW intercepts at `fetch`, so tests exercise the real httpClient → zod → TanStack Query →
