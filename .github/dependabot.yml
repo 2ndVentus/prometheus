@@ -15,6 +15,13 @@ updates:
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # Types must match the Node runtime we target (.nvmrc / engines), not the newest Node.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+      # TypeScript majors (e.g. the native TS 7 compiler) need deliberate toolchain verification.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: github-actions
     directory: /
