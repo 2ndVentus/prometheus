@@ -6,6 +6,7 @@ public static class DailySummaryAggregator
     /// <summary>Decimal places for the averaged prices in the public contract.</summary>
     public const int PriceDecimals = 4;
 
+    /// <summary>Aggregates intraday bars into per-day summaries using the exchange-local trading date.</summary>
     /// <remarks>
     /// <list type="bullet">
     /// <item>Days are calendar dates in the <em>exchange's</em> timezone (DST-aware), so sessions that
