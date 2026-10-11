@@ -52,13 +52,14 @@ jobs:
           dotnet test --solution StockData.slnx -c Release --no-build --
           --filter-not-trait "Category=Live"
           --report-xunit-trx
-          --coverage --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
+          --coverage --coverage-settings coverage.settings.xml
+          --coverage-output-format cobertura --coverage-output coverage.cobertura.xml
 
       - name: Coverage summary
         if: always()
         run: |
           dotnet tool run reportgenerator \
-            -reports:"**/TestResults/**/*.cobertura.xml" \
+            -reports:"tests/*/TestResults/*.cobertura.xml" \
             -targetdir:coverage-report \
             -reporttypes:"MarkdownSummaryGithub;Html"
           cat coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"

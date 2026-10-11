@@ -33,3 +33,4 @@ npm-debug.log*
 .env.*
 !.env.example
 appsettings.*.local.json
+coverage-report/
