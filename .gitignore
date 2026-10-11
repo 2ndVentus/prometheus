@@ -1,0 +1,35 @@
+# Assignment brief (third-party document — not redistributed)
+Take-Home Assessment.pdf
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+coverage/
+coveragereport/
+*.coverage
+*.trx
+
+# Node / frontend
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+npm-debug.log*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+appsettings.*.local.json
