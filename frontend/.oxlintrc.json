@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc", "jsx-a11y", "vitest", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-imports": "error",
+    "import/no-cycle": "error",
+    "import/no-unassigned-import": [
+      "error",
+      { "allow": ["**/*.css", "@testing-library/jest-dom/vitest"] }
+    ]
+  },
+  "ignorePatterns": ["dist", "coverage"]
+}

@@ -144,7 +144,12 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 
 ### 3.1 Tooling
 - **Vite + React 19 + TypeScript (strict)**. CRA is deprecated; Next.js adds SSR/server we don't need.
-- **Node 24 LTS**, pinned via `.nvmrc` and `engines`. ESLint (flat config) + Prettier. npm.
+- **Node 24 LTS**, pinned via `.nvmrc` and `engines`. npm.
+- **oxlint + Prettier** (changed from the planned ESLint during scaffolding): the current Vite
+  template ships oxlint by default; it is one dependency instead of ~6, 50–100x faster, and covers
+  what we need (react hooks, typescript, jsx-a11y, vitest, import-cycle rules). Run with
+  `--deny-warnings`. Prettier with `prettier-plugin-tailwindcss` for class ordering.
+- Vite 8, TypeScript 6 (`strict`, `noUncheckedIndexedAccess`).
 
 ### 3.2 Feature-based structure
 - `src/api/` (fetch wrapper, zod schemas) → `src/features/daily-summary/` (api, hook, components)
@@ -218,6 +223,15 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - Behaviour over implementation; `Method_Scenario_Expected` naming; Arrange/Act/Assert.
 
 ### 4.2 Backend: xUnit v3 + Shouldly + NSubstitute + hand-written `StubHttpMessageHandler`
+- **Microsoft.Testing.Platform (MTP)**, not VSTest (discovered during scaffolding): xUnit v3 runs
+  on MTP, and the .NET 10 SDK no longer supports VSTest-mode `dotnet test` for MTP projects.
+  `global.json` opts into the MTP runner; coverage comes from
+  `Microsoft.Testing.Extensions.CodeCoverage` (coverlet's VSTest collector doesn't apply);
+  `Microsoft.NET.Test.Sdk` and `xunit.runner.visualstudio` are not needed. The Live filter is
+  `--filter-not-trait "Category=Live"`.
+- MTP fails a run where **zero tests executed** (exit code 8). Kept as a guard against filters that
+  silently exclude everything — so test projects are added in the milestone that adds their first
+  tests, rather than scaffolded empty.
 - **Shouldly, not FluentAssertions**: FluentAssertions v8+ requires a paid commercial licence.
 - **NSubstitute, not Moq**: avoids the SponsorLink controversy; only needed at the provider seam.
 - No HTTP mocking library — a small stub handler returning fixtures/status/headers is enough.
@@ -241,8 +255,9 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   cancellation on symbol change, form normalisation/validation/disabled state, one error-message
   test per status, Retry button, table order and verbatim `day`, URL sync, chart renders with
   `aria-label` (no SVG snapshots).
-- Test script runs with **`TZ=America/Los_Angeles`** so any `new Date("yyyy-MM-dd")` regression
-  fails (date shifts a day). Backend tests likewise run under a non-UTC process timezone.
+- Vitest `globalSetup` sets **`TZ=America/Los_Angeles`** (cross-platform, unlike an inline env var
+  in an npm script), and a sanity test asserts it. Any `new Date("yyyy-MM-dd")` regression then
+  fails (the date shifts back a day). Backend tests likewise run under a non-UTC process timezone.
 
 ---
 
@@ -301,7 +316,7 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - **backend**: setup-dotnet from `global.json` + NuGet cache → `restore --locked-mode`
   (`packages.lock.json` enabled) → `dotnet format --verify-no-changes` → Release build
   (warnings as errors) → tests excluding `Category=Live`, with coverage, under `TZ=Asia/Tokyo`
-  → ReportGenerator summary to the job summary; TRX + coverage artifacts.
+  → ReportGenerator (pinned as a local tool in `dotnet-tools.json`) summary to the job summary; TRX + coverage artifacts.
 - **frontend**: setup-node from `.nvmrc` + npm cache → `npm ci` → lint → typecheck → tests with
   coverage (under `TZ=America/Los_Angeles`) → build.
 - **docker**: `compose build` → `up -d --wait` → `curl /health` through nginx → `down`

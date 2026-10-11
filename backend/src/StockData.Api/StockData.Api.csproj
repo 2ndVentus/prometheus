@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Scalar.AspNetCore" />
+    <ProjectReference Include="..\StockData.Application\StockData.Application.csproj" />
+    <ProjectReference Include="..\StockData.Infrastructure\StockData.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

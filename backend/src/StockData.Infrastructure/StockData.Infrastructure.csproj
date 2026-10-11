@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\StockData.Application\StockData.Application.csproj" />
+  </ItemGroup>
+</Project>
