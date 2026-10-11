@@ -1,0 +1,5 @@
+[*.cs]
+# Test method names describe behaviour (Method_Scenario_Expected), not the Async suffix.
+dotnet_naming_rule.async_methods_end_in_async.severity = none
+# Underscored test names are intentional.
+dotnet_diagnostic.CA1707.severity = none
