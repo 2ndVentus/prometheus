@@ -14,9 +14,10 @@ internal sealed class StubYahooHandler(HttpStatusCode status, string body) : Htt
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         RequestedUris.Add(request.RequestUri!);
-
-        // Ownership passes to HttpClient, which disposes the response.
-        var response = new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
-        return Task.FromResult(response);
+        return Task.FromResult(CreateResponse());
     }
+
+    // Ownership of the response passes to HttpClient, which disposes it.
+    private HttpResponseMessage CreateResponse() =>
+        new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 }
