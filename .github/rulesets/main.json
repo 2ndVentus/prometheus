@@ -48,6 +48,10 @@
           {
             "context": "frontend",
             "integration_id": 15368
+          },
+          {
+            "context": "docker",
+            "integration_id": 15368
           }
         ]
       }

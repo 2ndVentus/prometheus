@@ -1,0 +1,48 @@
+name: Live contract
+
+# Calls the real (unofficial) Yahoo Finance API through the production pipeline to catch upstream
+# shape changes early. Never a required check: Yahoo throttles shared CI IPs and is outside our
+# control, so a red run means "look", not "block merges".
+on:
+  schedule:
+    # Weekdays 15:00 UTC — during the US session, so in-session responses get exercised too.
+    - cron: '0 15 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  live:
+    name: live contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: backend/**/packages.lock.json
+
+      - name: Build
+        run: dotnet build tests/StockData.Infrastructure.Tests -c Release
+
+      - name: Live contract tests (one retry)
+        run: |
+          for attempt in 1 2; do
+            if dotnet test --project tests/StockData.Infrastructure.Tests -c Release --no-build -- --explicit only; then
+              exit 0
+            fi
+            echo "::warning::Live contract attempt $attempt failed"
+            sleep 30
+          done
+          exit 1
