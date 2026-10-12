@@ -1,1 +1,51 @@
 @import 'tailwindcss';
+
+/*
+ * Design tokens (dataviz reference palette: chrome + validated categorical slots).
+ * Light values here; dark values are separately chosen steps, not an automatic inversion.
+ */
+@theme {
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-page: #f9f9f7;
+  --color-surface: #fcfcfb;
+  --color-ink: #0b0b0b;
+  --color-ink-secondary: #52514e;
+  --color-ink-muted: #898781;
+  --color-hairline: #e1e0d9;
+  --color-border: rgb(11 11 11 / 0.1);
+  --color-accent: #2a78d6;
+  --color-accent-strong: #1c5cab;
+  --color-critical: #d03b3b;
+  --color-critical-wash: rgb(208 59 59 / 0.08);
+
+  --color-series-high: #2a78d6;
+  --color-series-low: #eb6834;
+  --color-series-volume: #1baf7a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --color-page: #0d0d0d;
+    --color-surface: #1a1a19;
+    --color-ink: #ffffff;
+    --color-ink-secondary: #c3c2b7;
+    --color-ink-muted: #898781;
+    --color-hairline: #2c2c2a;
+    --color-border: rgb(255 255 255 / 0.1);
+    --color-accent: #3987e5;
+    --color-accent-strong: #86b6ef;
+    --color-critical: #e66767;
+    --color-critical-wash: rgb(230 103 103 / 0.12);
+
+    --color-series-high: #3987e5;
+    --color-series-low: #d95926;
+    --color-series-volume: #199e70;
+  }
+}
+
+body {
+  background: var(--color-page);
+  color: var(--color-ink);
+}
