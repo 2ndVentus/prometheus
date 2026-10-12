@@ -39,6 +39,28 @@ public sealed class EndToEndTests
     }
 
     [Fact]
+    public async Task InstrumentAndSummary_ShareOneYahooRequest()
+    {
+        var yahoo = StubYahooHandler.Fixture("tsla.json");
+        await using var baseFactory = new WebApplicationFactory<Program>();
+        await using var factory = baseFactory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+                services.AddHttpClient(YahooHttpClientName).ConfigurePrimaryHttpMessageHandler(() => yahoo)));
+        using var client = factory.CreateClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        // The UI requests both at once; the cache must collapse them into a single upstream call.
+        var results = await Task.WhenAll(
+            client.GetStringAsync("/api/v1/stocks/TSLA", ct),
+            client.GetStringAsync("/api/v1/stocks/TSLA/daily-summary", ct));
+
+        results[0].ShouldBe(
+            """{"symbol":"TSLA","longName":"Tesla, Inc.","currency":"USD","exchangeName":"NasdaqGS","instrumentType":"EQUITY"}""");
+        results[1].ShouldStartWith("""[{"day":"2026-10-08",""");
+        yahoo.RequestedUris.ShouldHaveSingleItem();
+    }
+
+    [Fact]
     public async Task Get_UnknownSymbol_FromCapturedYahoo404_Returns404Problem()
     {
         const string notFound = """{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found, symbol may be delisted"}}}""";

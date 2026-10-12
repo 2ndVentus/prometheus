@@ -49,6 +49,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapHealthChecks("/health");
-app.MapDailySummaryEndpoints();
+app.MapStockEndpoints();
 
 app.Run();
