@@ -380,8 +380,8 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 | 5 | **HTTPS dev-cert friction** for reviewers | HTTP launch profile locally; TLS/HSTS at the reverse proxy, not in the app (see §2.7) |
 | 6 | **Vite proxy absent in `vite preview`** | Configure `preview.proxy`; `VITE_API_BASE_URL` for deployments |
 | 7 | **Retry amplification** (frontend × backend retries; retrying 429 worsens throttling) | Backend owns the retry budget (≤2, honours `Retry-After`, circuit breaker); frontend retries once on 502/504 only |
-| 8 | **Per-IP rate limit behind a proxy** collapses all users into one bucket | `UseForwardedHeaders` with configurable known proxies |
-| 9 | **Missing tzdata/ICU in slim containers** → silent fallback to fixed offset (wrong across DST) | Debian-based image or install `tzdata`; log a warning on fallback |
+| 8 | **Per-IP rate limit behind a proxy** collapses all users into one bucket | `UseForwardedHeaders` trusting only the compose subnet; verified per-client buckets and spoof resistance behind nginx ✅ |
+| 9 | **Missing tzdata/ICU in slim containers** → silent fallback to fixed offset (wrong across DST) | Full `aspnet` image (Ubuntu 24.04, tzdata + ICU); warning logged on fallback; verified none in Docker ✅ |
 | 10 | **Today's row is partial** during market hours | UI footnote; round once after averaging |
 | 11 | **Fewer days/bars than expected** (holidays, half-days, new listings) | No code assumes fixed counts; tests for short/empty series |
 | 12 | **Special characters in symbols** (`^`, `=`, `-`) | `encodeURIComponent` / `Uri.EscapeDataString`; route accepts them; tested both sides |
@@ -404,11 +404,24 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   `npm run dev` on :5173 with the Vite proxy. No certs, no env vars.
 - **Docker Compose (one command, reviewer-friendly)** — only Docker required, which removes the
   ".NET 10 SDK not installed" failure mode.
-  - `api`: multi-stage `sdk:10.0` → `aspnet:10.0`, **Debian-based** (tzdata + ICU present), non-root
-    `app` user, port 8080, `/health` healthcheck.
-  - `web`: `node:24` build → `nginx:alpine` serving static files and reverse-proxying `/api` →
-    `api:8080` (same-origin, no CORS — mirrors production topology).
-  - `web` waits on `api` being healthy.
+  - `api`: multi-stage `sdk:10.0` → `aspnet:10.0` (the full image — **Ubuntu 24.04** on .NET 10, not
+    the Debian assumed in planning — with tzdata + ICU; verified Asia/Tokyo resolves and no
+    fixed-offset fallback is logged). Restore runs from project + lock files only for layer caching
+    (`--locked-mode`). Non-root `app` user (uid 1654), port 8080, **not published to the host**.
+    Healthcheck uses bash's `/dev/tcp` (no curl/wget in the image).
+  - `web`: `node:24-alpine` build → **`nginx-unprivileged`** (non-root, :8080) serving the SPA and
+    reverse-proxying `/api` → `api:8080` (same origin, no CORS — mirrors a production topology).
+    Security headers (CSP, nosniff, frame-deny, referrer policy) from one included snippet, since
+    nginx doesn't inherit `add_header` into locations that set their own; hashed assets cached for a
+    year, `index.html` `no-cache`; gzip. CSP allows inline *styles* only (React/Recharts style
+    attributes) — verified no CSP violations in the browser.
+  - Both containers: `read_only` root filesystem + tmpfs `/tmp`, `cap_drop: [ALL]`,
+    `no-new-privileges` (verified: `CapEff 0`, `NoNewPrivs 1`). `web` waits on `api` healthy.
+  - Fixed compose subnet (`172.28.0.0/24`) so the API trusts `X-Forwarded-For` only from that
+    network. **Verified**: with the limit lowered to 3/min, the host client got 429 on its 4th
+    request, spoofing `X-Forwarded-For` didn't help (nginx appends the real IP; the API reads the
+    last hop), and a second client (inside the `web` container) still had its own allowance.
+  - Base images pinned by **tag + digest**; Dependabot (`docker` ecosystem) bumps both.
 - No Makefile/task runner: not available on Windows by default; explicit README commands are clearer.
 
 ### 6.2 GitHub
@@ -462,13 +475,15 @@ of PR (code, docs, config, Dependabot) before it's considered done.
   → ReportGenerator (pinned as a local tool in `dotnet-tools.json`) summary to the job summary; TRX + coverage artifacts.
 - **frontend**: setup-node from `.nvmrc` + npm cache → `npm ci` → lint → typecheck → tests with
   coverage (under `TZ=America/Los_Angeles`) → build.
-- **docker**: `compose build` → `up -d --wait` → `curl /health` through nginx → `down`
-  (keeps Dockerfiles/proxy config honest without calling Yahoo).
+- **docker**: `compose build` → `up -d --wait` → smoke test through nginx (`/healthz`, `index.html`,
+  and an invalid symbol that the API itself rejects with 400 — proves nginx → API without calling
+  Yahoo) → logs on failure → `down`.
 - **No path filters**: path-filtered *required* checks leave PRs stuck "waiting for status"; both
   jobs are fast enough to always run.
 
 ### 6.4 Live contract workflow (`live-contract.yml`)
-- Nightly `schedule` + `workflow_dispatch`; runs the explicit `Category=Live` tests
+- Weekdays at 15:00 UTC (during the US session, so in-session responses are exercised — changed
+  from "nightly") + `workflow_dispatch`; runs the explicit `Category=Live` tests
   (`-- --explicit only`) against real Yahoo with one retry.
 - **Not a required check** — never blocks merges; failure notifies the owner (early warning for
   upstream changes; tolerant of runner-IP throttling).
@@ -526,8 +541,8 @@ Things consciously **not** built for the MVP, why, and what would trigger revisi
       so far were post-close (weekend).
 - [ ] Verify the CodeQL code-scanning merge gate on a **docs-only PR** (PR #6 contained code, so it
       didn't prove the deadlock fix).
-- [ ] Forwarded-headers trust (`ForwardedHeaders:KnownNetworks`) is configured but only verifiable
-      behind a real proxy — check per-client rate limiting through nginx in milestone 6.
+- [x] Forwarded-headers trust verified behind nginx in Docker (see §6.1).
+- [ ] Add `docker` to the ruleset's required checks once the job has run on a PR.
 - [ ] Retry behaviour of the resilience pipeline is configured but not exercised by a test (the
       standard handler's exponential backoff would make it slow); covered by library tests and the
       live contract test.
