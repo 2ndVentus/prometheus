@@ -17,7 +17,16 @@ internal sealed record YahooChartResult(
     IReadOnlyList<long>? Timestamp,
     YahooIndicators? Indicators);
 
-internal sealed record YahooChartMeta(string? Symbol, string? ExchangeTimezoneName, int? Gmtoffset);
+internal sealed record YahooChartMeta(
+    string? Symbol,
+    string? ExchangeTimezoneName,
+    int? Gmtoffset,
+    string? LongName = null,
+    string? ShortName = null,
+    string? Currency = null,
+    string? FullExchangeName = null,
+    string? ExchangeName = null,
+    string? InstrumentType = null);
 
 internal sealed record YahooIndicators(IReadOnlyList<YahooQuote>? Quote);
 

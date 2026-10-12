@@ -20,7 +20,8 @@ internal sealed record CachedIntradaySeries(
     bool Found,
     string? TimeZoneId,
     int? FixedUtcOffsetSeconds,
-    IReadOnlyList<IntradayBar> Bars)
+    IReadOnlyList<IntradayBar> Bars,
+    InstrumentInfo? Instrument = null)
 {
     public static CachedIntradaySeries NotFound { get; } = new(false, null, null, []);
 
@@ -28,11 +29,12 @@ internal sealed record CachedIntradaySeries(
     {
         var zone = series.ExchangeTimeZone;
         return TimeZoneInfo.TryFindSystemTimeZoneById(zone.Id, out _)
-            ? new(true, zone.Id, null, series.Bars)
-            : new(true, null, (int)zone.BaseUtcOffset.TotalSeconds, series.Bars);
+            ? new(true, zone.Id, null, series.Bars, series.Instrument)
+            : new(true, null, (int)zone.BaseUtcOffset.TotalSeconds, series.Bars, series.Instrument);
     }
 
-    public IntradaySeries ToSeries(StockSymbol symbol) => new(symbol, ResolveTimeZone(), Bars);
+    public IntradaySeries ToSeries(StockSymbol symbol) =>
+        new(symbol, ResolveTimeZone(), Bars) { Instrument = Instrument ?? InstrumentInfo.Unknown };
 
     private TimeZoneInfo ResolveTimeZone() => TimeZoneId is not null
         ? TimeZoneInfo.FindSystemTimeZoneById(TimeZoneId)

@@ -25,7 +25,10 @@ internal sealed partial class YahooChartMapper(IEnumerable<IBarFilter> filters, 
             bars = filter.Apply(bars);
         }
 
-        return new IntradaySeries(symbol, timeZone, bars.Select(ToDomain).ToList());
+        return new IntradaySeries(symbol, timeZone, bars.Select(ToDomain).ToList())
+        {
+            Instrument = ToInstrument(meta),
+        };
     }
 
     private static RawBar[] ReadBars(StockSymbol symbol, YahooChartResult result)
@@ -76,6 +79,19 @@ internal sealed partial class YahooChartMapper(IEnumerable<IBarFilter> filters, 
 
         throw ContractViolation(symbol, "exchange timezone is missing");
     }
+
+    /// <remarks>
+    /// Falls back to the short forms Yahoo also sends (<c>shortName</c>, <c>exchangeName</c>) when the
+    /// long ones are missing; blank values count as unknown.
+    /// </remarks>
+    private static InstrumentInfo ToInstrument(YahooChartMeta meta) => new(
+        Name: FirstNonBlank(meta.LongName, meta.ShortName),
+        Currency: FirstNonBlank(meta.Currency),
+        ExchangeName: FirstNonBlank(meta.FullExchangeName, meta.ExchangeName),
+        InstrumentType: FirstNonBlank(meta.InstrumentType));
+
+    private static string? FirstNonBlank(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
 
     // Incomplete bars were removed by IncompleteBarFilter; reaching here with one is a wiring bug.
     private static IntradayBar ToDomain(RawBar bar) => bar.HasCompletePrices

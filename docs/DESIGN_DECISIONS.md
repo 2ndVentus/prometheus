@@ -62,8 +62,9 @@ futures.
   that far.
 
 ### 1.4 The response is the brief's bare array
-- `[{ day, lowAverage, highAverage, volume }]`, no envelope. Metadata (currency, name, timezone)
-  is deliberately left out; a separate endpoint can add it without breaking this contract.
+- `[{ day, lowAverage, highAverage, volume }]`, no envelope. Instrument metadata (name, currency,
+  exchange, type) is served by a **separate endpoint** (§2.5) so this contract stays exactly as
+  specified.
 
 ### 1.5 Incomplete bars are dropped
 - Yahoo sends bars with `null` prices: **every Hong Kong and Tokyo session has lunch-break null
@@ -160,6 +161,19 @@ futures.
   which flow into OpenAPI). Versioned prefix for forward compatibility.
 - The route takes a raw `string` and parses `StockSymbol` in the handler, so an invalid symbol gets
   a **descriptive** 400 (binding the value object directly would give a generic one).
+- **`GET /api/v1/stocks/{symbol}`** returns instrument metadata:
+  `{ symbol, longName, currency, exchangeName, instrumentType }`, unknown fields as explicit `null`.
+  - **Same upstream call, same cache.** Yahoo's chart response already carries the metadata in
+    `meta`, so the provider maps it into an `InstrumentInfo` carried on the `IntradaySeries`, and
+    both endpoints read the same cached entry. The UI requests both at once; HybridCache collapses
+    that into **one** Yahoo request (verified end to end). Rejected: a second provider method making
+    its own call — doubles upstream traffic against a per-IP rate limit.
+  - **Provider-neutral names**: Yahoo's `fullExchangeName` is exposed as `exchangeName`, and
+    `longName` falls back to `shortName` (and `fullExchangeName` to `exchangeName`) when missing.
+  - Values are passed through as reported: `GBp` means pence; indices, crypto and FX report terse
+    exchange codes (`SNP`, `CCC`, `CCY`). Presentation is the frontend's job.
+  - Same validation, error mapping and rate limit as the daily summary (shared helpers in
+    `StockEndpoints`).
 - **`DailySummaryResponse`** is separate from the domain record; serialized with a source-generated
   `ApiJsonContext`. **`CanonicalDecimalJsonConverter`** writes the shortest form (`382.7`, not
   `382.7000`) because `decimal` carries its scale into JSON (hidden issue #1).
@@ -485,8 +499,7 @@ Consciously **not** built for the MVP, why, and what would trigger revisiting.
 |---|---|---|
 | Separate `Domain` project | A few records and a pure function | The domain gains real behaviour (indicators, portfolios, corporate actions) |
 | `Result<T>` across layers | Boilerplate without `?` propagation; a global handler is needed anyway | Richer validation or several failure types per call |
-| Metadata (currency, name, timezone, listing date) | The brief fixes the bare-array format | Add a separate `/stocks/{symbol}` endpoint |
-| Currency display in the UI | Not in the contract; guessing is wrong (VOD.L is in pence) | The metadata endpoint exists |
+| Listing date and timezone in the metadata | Not needed by the UI yet | A feature needs them (e.g. explaining short histories) |
 | Configurable range / interval | The brief fixes "last month"; 15m data is limited to 60 days | Product needs other windows (validated allow-list) |
 | Extended-hours data | Mostly zero-volume bars that distort averages | An explicit need; a separate opt-in series |
 | Distributed cache (Redis) | Single instance; in-memory HybridCache suffices | Scaling out to several instances |

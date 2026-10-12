@@ -114,6 +114,30 @@ public sealed class CachedMarketDataProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task GetIntradaySeriesAsync_CachedSeries_KeepsInstrumentMetadata()
+    {
+        var tesla = new InstrumentInfo("Tesla, Inc.", "USD", "NasdaqGS", "EQUITY");
+        _inner.GetIntradaySeriesAsync(Arg.Any<StockSymbol>(), Arg.Any<CancellationToken>())
+            .Returns(Series("TSLA") with { Instrument = tesla });
+
+        await _cached.GetIntradaySeriesAsync(Symbol("TSLA"), Ct);
+        var fromCache = await _cached.GetIntradaySeriesAsync(Symbol("TSLA"), Ct);
+
+        fromCache.Instrument.ShouldBe(tesla);
+    }
+
+    [Fact]
+    public void CachedIntradaySeries_RoundTripsInstrumentThroughJson()
+    {
+        var series = Series("TSLA") with { Instrument = new InstrumentInfo("Tesla, Inc.", "USD", null, "EQUITY") };
+
+        var restored = JsonSerializer.Deserialize<CachedIntradaySeries>(
+            JsonSerializer.Serialize(CachedIntradaySeries.From(series)))!.ToSeries(Symbol("TSLA"));
+
+        restored.Instrument.ShouldBe(series.Instrument);
+    }
+
+    [Fact]
     public void CachedIntradaySeries_RoundTripsFixedOffsetFallbackZone()
     {
         var fallback = FixedOffsetTimeZone.Create(TimeSpan.FromHours(-4));

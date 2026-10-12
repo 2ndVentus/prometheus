@@ -15,6 +15,8 @@ public sealed class OpenApiTests
 
         document.ShouldContain("/api/v1/stocks/{symbol}/daily-summary");
         document.ShouldContain("GetDailySummary");
+        document.ShouldContain("\"/api/v1/stocks/{symbol}\"");
+        document.ShouldContain("GetInstrument");
     }
 
     [Fact]
