@@ -65,10 +65,14 @@ describe('SymbolSearchForm', () => {
     expect(input).toHaveValue('^GSPC')
   })
 
-  it('disables submitting while loading', () => {
-    setup({ isLoading: true })
+  it('stays usable while loading, so a new search can supersede a slow one', async () => {
+    const { onSearch, user } = setup({ isLoading: true })
 
-    expect(screen.getByRole('button', { name: 'Loading…' })).toBeDisabled()
+    expect(screen.getByRole('form', { name: 'Search' })).toHaveAttribute('aria-busy', 'true')
+    expect(screen.getByRole('button', { name: 'Show' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'AAPL' }))
+
+    expect(onSearch).toHaveBeenCalledWith('AAPL')
   })
 
   it('starts with the current symbol', () => {

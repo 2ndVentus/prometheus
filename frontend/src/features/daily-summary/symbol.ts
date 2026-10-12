@@ -4,7 +4,8 @@
  */
 export const SYMBOL_MAX_LENGTH = 14
 
-const SYMBOL_PATTERN = new RegExp(`^[A-Z0-9.\\-^=]{1,${SYMBOL_MAX_LENGTH}}$`)
+// At least one letter or digit: punctuation-only input (".", "..", "^") is never a ticker.
+const SYMBOL_PATTERN = new RegExp(`^(?=.*[A-Z0-9])[A-Z0-9.\\-^=]{1,${SYMBOL_MAX_LENGTH}}$`)
 
 export const normalizeSymbol = (input: string): string => input.trim().toUpperCase()
 

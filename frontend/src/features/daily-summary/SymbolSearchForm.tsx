@@ -20,7 +20,7 @@ export function SymbolSearchForm({ initialSymbol, isLoading, onSearch }: SymbolS
       setError(
         symbol === ''
           ? 'Enter a ticker symbol.'
-          : `Use 1–${SYMBOL_MAX_LENGTH} letters, digits or . - ^ = (e.g. TSLA, BRK-B, ^GSPC).`,
+          : `Use 1–${SYMBOL_MAX_LENGTH} letters, digits or . - ^ =, with at least one letter or digit (e.g. TSLA, BRK-B, ^GSPC).`,
       )
       return
     }
@@ -35,7 +35,14 @@ export function SymbolSearchForm({ initialSymbol, isLoading, onSearch }: SymbolS
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-3">
+    // Stays usable while loading: a new search supersedes (and cancels) a slow one.
+    <form
+      aria-label="Search"
+      aria-busy={isLoading}
+      onSubmit={handleSubmit}
+      noValidate
+      className="flex flex-col gap-3"
+    >
       <label htmlFor={inputId} className="text-ink-secondary text-sm font-medium">
         Ticker symbol
       </label>
@@ -56,10 +63,15 @@ export function SymbolSearchForm({ initialSymbol, isLoading, onSearch }: SymbolS
         />
         <button
           type="submit"
-          disabled={isLoading}
-          className="bg-accent hover:bg-accent-strong focus-visible:ring-accent rounded-lg px-4 py-2 font-medium text-white transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          className="bg-accent hover:bg-accent-strong focus-visible:ring-accent flex items-center gap-2 rounded-lg px-4 py-2 font-medium text-white transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
         >
-          {isLoading ? 'Loading…' : 'Show'}
+          {isLoading && (
+            <span
+              aria-hidden
+              className="size-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+            />
+          )}
+          Show
         </button>
       </div>
       {error !== null ? (
@@ -81,8 +93,7 @@ export function SymbolSearchForm({ initialSymbol, isLoading, onSearch }: SymbolS
             key={example}
             type="button"
             onClick={() => search(example)}
-            disabled={isLoading}
-            className="border-border text-ink-secondary hover:border-accent hover:text-ink focus-visible:ring-accent rounded-full border px-3 py-1 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:opacity-60"
+            className="border-border text-ink-secondary hover:border-accent hover:text-ink focus-visible:ring-accent rounded-full border px-3 py-1 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
           >
             {example}
           </button>

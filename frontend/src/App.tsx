@@ -1,10 +1,18 @@
+import { useEffect } from 'react'
 import { DailySummaryView } from './features/daily-summary/DailySummaryView'
 import { SymbolSearchForm } from './features/daily-summary/SymbolSearchForm'
 import { useDailySummary } from './features/daily-summary/useDailySummary'
 import { useSymbolParam } from './features/daily-summary/useSymbolParam'
 
+const APP_TITLE = 'Intraday Daily Summary'
+
 export function App() {
   const [symbol, setSymbol] = useSymbolParam()
+
+  // Tabs, history and bookmarks show which symbol a page is about.
+  useEffect(() => {
+    document.title = symbol ? `${symbol} · ${APP_TITLE}` : APP_TITLE
+  }, [symbol])
   const { isFetching } = useDailySummary(symbol)
 
   return (

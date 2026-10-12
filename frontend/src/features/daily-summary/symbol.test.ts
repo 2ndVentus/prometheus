@@ -9,12 +9,23 @@ describe('symbol rules (mirror of backend StockSymbol)', () => {
     expect(isValidSymbol(symbol)).toBe(true)
   })
 
-  it.each(['', 'TS LA', 'ABC/DEF', '<SCRIPT>', 'tsla', 'A'.repeat(SYMBOL_MAX_LENGTH + 1)])(
-    'rejects "%s"',
-    (symbol) => {
-      expect(isValidSymbol(symbol)).toBe(false)
-    },
-  )
+  it.each([
+    '',
+    'TS LA',
+    'ABC/DEF',
+    '<SCRIPT>',
+    'tsla',
+    'A'.repeat(SYMBOL_MAX_LENGTH + 1),
+    '.',
+    '..',
+    '...',
+    '-',
+    '^',
+    '=',
+    '^.=-',
+  ])('rejects "%s"', (symbol) => {
+    expect(isValidSymbol(symbol)).toBe(false)
+  })
 
   it('allows exactly the maximum length', () => {
     expect(isValidSymbol('A'.repeat(SYMBOL_MAX_LENGTH))).toBe(true)

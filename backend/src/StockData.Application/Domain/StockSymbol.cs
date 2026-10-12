@@ -9,7 +9,9 @@ namespace StockData.Application.Domain;
 /// <remarks>
 /// Normalisation trims whitespace and upper-cases. The character set covers equities, share
 /// classes (<c>-</c>), exchange suffixes (<c>.</c>), indices (<c>^</c>) and FX/futures (<c>=</c>);
-/// anything else is rejected before it reaches an upstream provider.
+/// anything else is rejected before it reaches an upstream provider. At least one letter or digit
+/// is required: punctuation-only input (<c>.</c>, <c>..</c>, <c>^</c>) is never a ticker, and a
+/// <c>..</c> path segment would make the upstream URL resolve to a different path.
 /// </remarks>
 public sealed partial record StockSymbol
 {
@@ -39,6 +41,6 @@ public sealed partial record StockSymbol
 
     public override string ToString() => Value;
 
-    [GeneratedRegex(@"^[A-Z0-9.\-^=]+$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^(?=.*[A-Z0-9])[A-Z0-9.\-^=]+$", RegexOptions.CultureInvariant)]
     private static partial Regex AllowedCharacters();
 }

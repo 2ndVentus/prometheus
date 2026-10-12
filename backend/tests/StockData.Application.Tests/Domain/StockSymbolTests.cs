@@ -31,6 +31,13 @@ public sealed class StockSymbolTests
     [InlineData("<script>")]
     [InlineData("TSLA;DROP")]
     [InlineData("ÄPPLE")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("...")]
+    [InlineData("-")]
+    [InlineData("^")]
+    [InlineData("=")]
+    [InlineData("^.=-")]
     public void TryParse_InvalidInput_ReturnsFalse(string? input)
     {
         StockSymbol.TryParse(input, out var symbol).ShouldBeFalse();

@@ -49,6 +49,24 @@ describe('App', () => {
     expect(within(tile).getByText('Oct 9')).toBeInTheDocument()
   })
 
+  it('puts the symbol in the page title', async () => {
+    renderAt('?symbol=TSLA')
+
+    await screen.findByRole('table')
+    expect(document.title).toBe('TSLA · Intraday Daily Summary')
+  })
+
+  it('does not add a history entry when searching the current symbol again', async () => {
+    const { user } = renderAt('?symbol=TSLA')
+    await screen.findByRole('table')
+    const entries = window.history.length
+
+    await user.click(screen.getByRole('button', { name: 'TSLA' }))
+
+    expect(window.history.length).toBe(entries)
+    expect(window.location.search).toBe('?symbol=TSLA')
+  })
+
   it('ignores an invalid symbol in the URL', () => {
     renderAt('?symbol=%3Cscript%3E')
 

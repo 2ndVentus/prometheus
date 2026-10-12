@@ -24,6 +24,8 @@ export function useSymbolParam(): [string | null, (symbol: string) => void] {
 
   const setSymbol = useCallback((next: string) => {
     const url = new URL(window.location.href)
+    // Re-searching the current symbol mustn't add a history entry, or Back would appear to do nothing.
+    if (url.searchParams.get(PARAM) === next) return
     url.searchParams.set(PARAM, next)
     window.history.pushState(null, '', url)
     window.dispatchEvent(new PopStateEvent('popstate'))
