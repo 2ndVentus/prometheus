@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="NSubstitute" />
+    <ProjectReference Include="..\..\src\StockData.Application\StockData.Application.csproj" />
+  </ItemGroup>
+</Project>
