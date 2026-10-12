@@ -5,7 +5,6 @@ const priceFormat = new Intl.NumberFormat(LOCALE, {
   minimumFractionDigits: 4,
   maximumFractionDigits: 4,
 })
-const axisNumberFormat = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 4 })
 const volumeFormat = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 0 })
 const compactFormat = new Intl.NumberFormat(LOCALE, {
   notation: 'compact',
@@ -39,8 +38,24 @@ const headlineLargePriceFormat = new Intl.NumberFormat(LOCALE, {
 export const formatHeadlinePrice = (value: number): string =>
   Math.abs(value) >= 1000 ? headlineLargePriceFormat.format(value) : priceFormat.format(value)
 
-/** Axis ticks are already round numbers (see niceTicks), so show only the decimals they need. */
-export const formatAxisNumber = (value: number): string => axisNumberFormat.format(value)
+/**
+ * Formatter for a set of axis ticks with the same number of decimals on every tick, so labels
+ * line up (`9.990 / 9.995 / 10.000`, not `9.99 / 9.995 / 10`). Ticks are round numbers (see
+ * niceTicks), so this is the fewest decimals that represents all of them, capped at 4.
+ */
+export function createAxisFormatter(ticks: readonly number[]): (value: number) => string {
+  const decimals = Math.min(4, Math.max(0, ...ticks.map(decimalPlaces)))
+  const format = new Intl.NumberFormat(LOCALE, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
+  return (value) => format.format(value)
+}
+
+function decimalPlaces(value: number): number {
+  const [, fraction = ''] = value.toFixed(10).replace(/0+$/, '').split('.')
+  return fraction.length
+}
 
 export const formatVolume = (value: number): string => volumeFormat.format(value)
 

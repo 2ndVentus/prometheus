@@ -10,6 +10,13 @@ const DailySummaryChart = lazy(() =>
   import('./DailySummaryChart').then((module) => ({ default: module.DailySummaryChart })),
 )
 
+/**
+ * A month is ~20–23 trading days (fewer around holidays — Tokyo had 19 in Sep–Oct 2026). Well
+ * below that, the "last month" heading would mislead without a note. The API has no listing date,
+ * so the note can't say which reason applies.
+ */
+const SHORT_HISTORY_DAYS = 15
+
 export function DailySummaryView({ symbol }: { symbol: string | null }) {
   const query = useDailySummary(symbol)
 
@@ -81,6 +88,12 @@ export function DailySummaryView({ symbol }: { symbol: string | null }) {
         </h2>
         <p className="text-ink-muted text-sm">Days are the exchange's local trading days</p>
       </div>
+      {!showingPrevious && data.length < SHORT_HISTORY_DAYS && (
+        <p className="border-border bg-surface text-ink-secondary rounded-lg border px-4 py-2 text-sm">
+          Only {data.length} trading day{data.length === 1 ? '' : 's'} of data — fewer than a
+          typical month. The symbol may be newly listed, or trading may have been suspended.
+        </p>
+      )}
       <SummaryStats data={data} />
       {/* Keyed by symbol so a chart failure for one ticker doesn't stick for the next. */}
       <ErrorBoundary key={symbol} fallback={<ChartUnavailable />}>

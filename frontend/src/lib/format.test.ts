@@ -1,5 +1,5 @@
 import {
-  formatAxisNumber,
+  createAxisFormatter,
   formatCompact,
   formatDayLong,
   formatDayShort,
@@ -49,13 +49,23 @@ describe('day formatting', () => {
   })
 })
 
-describe('formatAxisNumber', () => {
-  it.each([
-    [350, '350'],
-    [1.1205, '1.1205'],
-    [7850, '7,850'],
-  ])('formats %s as %s', (value, expected) => {
-    expect(formatAxisNumber(value)).toBe(expected)
+describe('createAxisFormatter', () => {
+  it('gives every tick the same decimals', () => {
+    const format = createAxisFormatter([9.99, 9.995, 10, 10.005])
+
+    expect([9.99, 9.995, 10, 10.005].map(format)).toEqual(['9.990', '9.995', '10.000', '10.005'])
+  })
+
+  it('uses no decimals for whole-number ticks', () => {
+    const format = createAxisFormatter([350, 360, 370])
+
+    expect(format(360)).toBe('360')
+    expect(createAxisFormatter([7800, 7850])(7850)).toBe('7,850')
+  })
+
+  it('handles FX-sized steps and caps at 4 decimals', () => {
+    expect(createAxisFormatter([1.12, 1.1205, 1.121])(1.12)).toBe('1.1200')
+    expect(createAxisFormatter([0.00001, 0.00002])(0.00001)).toBe('0.0000')
   })
 })
 

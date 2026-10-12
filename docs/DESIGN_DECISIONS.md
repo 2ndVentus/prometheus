@@ -251,6 +251,12 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   reliably resolve CSS custom properties.
 - **Round axis ticks** (`niceTicks`: steps of 1/2/2.5/5 × 10ⁿ) — Recharts spaces ticks evenly between
   the domain ends, which produced labels like `376.6388`. The price axis hugs the data (never from 0).
+  Every tick on an axis uses the same number of decimals (`9.990 / 9.995 / 10.000`, not
+  `9.99 / 9.995 / 10`) — found testing PAXGU, a ~$10 SPAC unit.
+- **Short history note**: fewer than 15 trading days (a month is ~20–23, Tokyo had 19 with
+  holidays) shows "Only N trading days of data…" so the "last month" heading doesn't mislead for
+  new listings (PAXGU had 4) or suspended symbols. The API has no listing date, so the note doesn't
+  claim which reason applies.
 - Accessibility: `<figure>`/`<figcaption>` + Recharts `title`/`desc` on each SVG (not `role="img"`,
   which would hide Recharts' keyboard navigation layer); legend with line keys; table is the full
   text equivalent.

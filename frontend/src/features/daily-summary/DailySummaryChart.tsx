@@ -11,7 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import {
-  formatAxisNumber,
+  createAxisFormatter,
   formatCompact,
   formatDayLong,
   formatDayShort,
@@ -31,6 +31,7 @@ export function DailySummaryChart({ symbol, data }: { symbol: string; data: Dail
   const theme = useChartTheme()
   const rows = data.map((d) => ({ ...d, range: [d.lowAverage, d.highAverage] as [number, number] }))
   const ticks = priceTicks(data)
+  const formatPriceTick = createAxisFormatter(ticks)
   const syncId = `daily-summary-${symbol}`
   const axisTick = { fill: theme.inkMuted, fontSize: 12 }
 
@@ -60,7 +61,7 @@ export function DailySummaryChart({ symbol, data }: { symbol: string; data: Dail
               domain={[ticks[0] ?? 'auto', ticks.at(-1) ?? 'auto']}
               ticks={ticks}
               interval={0}
-              tickFormatter={formatAxisNumber}
+              tickFormatter={formatPriceTick}
               tick={axisTick}
               tickLine={false}
               axisLine={false}

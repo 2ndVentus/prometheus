@@ -113,6 +113,26 @@ describe('App', () => {
     expect(calls).toBe(1)
   })
 
+  it('notes a short history, e.g. a newly listed symbol', async () => {
+    renderAt('?symbol=TSLA') // default handler returns 2 days
+
+    expect(await screen.findByText(/only 2 trading days of data/i)).toBeInTheDocument()
+  })
+
+  it('does not note a full month of data', async () => {
+    const days = Array.from({ length: 20 }, (_, i) => ({
+      day: `2026-09-${String(i + 1).padStart(2, '0')}`,
+      lowAverage: 100,
+      highAverage: 101,
+      volume: 1000,
+    }))
+    server.use(http.get(DAILY_SUMMARY_URL, () => HttpResponse.json(days)))
+    renderAt('?symbol=TSLA')
+
+    await screen.findByRole('table')
+    expect(screen.queryByText(/trading days? of data/i)).not.toBeInTheDocument()
+  })
+
   it('shows an empty state when there were no trading days', async () => {
     server.use(http.get(DAILY_SUMMARY_URL, () => HttpResponse.json([])))
     renderAt('?symbol=NEWIPO')
