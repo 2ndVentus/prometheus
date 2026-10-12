@@ -91,6 +91,38 @@ public sealed class YahooChartMapperTests
         ]);
     }
 
+    [Theory]
+    [InlineData(Tsla, "TSLA", "Tesla, Inc.", "USD", "NasdaqGS", "EQUITY")]
+    [InlineData(Tencent, "0700.HK", "Tencent Holdings Limited", "HKD", "HKSE", "EQUITY")]
+    [InlineData(Toyota, "7203.T", "Toyota Motor Corporation", "JPY", "Tokyo", "EQUITY")]
+    [InlineData(Bhp, "BHP.AX", "BHP Group Limited", "AUD", "ASX", "EQUITY")]
+    [InlineData(EurUsd, "EURUSD=X", "EUR/USD", "USD", "CCY", "CURRENCY")]
+    public void ToSeries_MapsInstrumentMetadataFromRealResponses(
+        string fixture, string symbol, string name, string currency, string exchange, string type)
+    {
+        var instrument = CreateMapper().ToSeries(Symbol(symbol), Result(fixture)).Instrument;
+
+        instrument.ShouldBe(new InstrumentInfo(name, currency, exchange, type));
+    }
+
+    [Fact]
+    public void ToSeries_MissingLongNames_FallsBackToShortForms()
+    {
+        var meta = Meta("America/New_York") with { ShortName = "TESLA INC", ExchangeName = "NMS", LongName = "  " };
+
+        var instrument = CreateMapper().ToSeries(Symbol("TSLA"), new YahooChartResult(meta, [], null)).Instrument;
+
+        instrument.Name.ShouldBe("TESLA INC");
+        instrument.ExchangeName.ShouldBe("NMS");
+    }
+
+    [Fact]
+    public void ToSeries_NoMetadata_LeavesInstrumentDetailsUnknown()
+    {
+        CreateMapper().ToSeries(Symbol("TSLA"), new YahooChartResult(Meta("America/New_York"), [], null))
+            .Instrument.ShouldBe(InstrumentInfo.Unknown);
+    }
+
     [Fact]
     public void ToSeries_UsesRequestedSymbol()
     {
