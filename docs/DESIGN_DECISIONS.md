@@ -45,9 +45,13 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   breaking the contract.
 
 ### 1.5 Null bars are skipped
-- Yahoo emits bars with `null` OHLC (observed on `EURUSD=X`; also known to occur on halts and
-  illiquid symbols). A bar with a null `low` or `high` is excluded so it can't drag averages to
-  zero.
+- Yahoo emits bars with `null` OHLC. More common than first thought: building fixtures showed
+  **every Hong Kong and Tokyo session has lunch-break null bars** (4 and 3 per day), plus FX gaps
+  (`EURUSD=X`), halts and illiquid symbols. A bar with **any** null price is excluded so it can't
+  drag averages to zero (domain bars are complete by construction). Null volume is treated as 0.
+- **Filter order: trailing-snapshot first, then incomplete-bar.** The snapshot rule must judge the
+  series exactly as Yahoo sent it; if nulls were removed first, a genuine final bar could become
+  "last" and be judged as a snapshot.
 
 ### 1.6 Trailing "snapshot" bar is removed — narrowly
 - Yahoo appends a final **last-price snapshot** to the series: `volume == 0` and
@@ -92,7 +96,7 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   type system enforces rather than something the aggregator must re-check.
 
 ### 2.2a `StockSymbol` value object (domain primitive)
-- Symbols are parsed once at the edge into a `StockSymbol` (trim, upper-case, max 20 chars,
+- Symbols are parsed once at the edge into a `StockSymbol` (trim, upper-case, max 14 chars,
   `[A-Z0-9.\-^=]`) and passed as that type everywhere after — no raw strings reach the provider,
   and validation lives in one place shared by the endpoint and any future callers. Avoids
   primitive obsession; equality is by normalised value (`tsla` == `TSLA`).
@@ -104,8 +108,12 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - **Input validation** (bad symbol format) is an expected user mistake → handled as a value at
   the endpoint (`TypedResults.ValidationProblem`), no exception thrown.
 - **Upstream failures** are translated in Infrastructure into a small set of typed exceptions
-  (`SymbolNotFoundException`, `UpstreamRateLimitedException`, `UpstreamUnavailableException`) and
-  mapped to RFC 7807 ProblemDetails by a single `IExceptionHandler`.
+  and mapped to RFC 7807 ProblemDetails by a single `IExceptionHandler`. The exception types live in
+  **Application** (`Abstractions/MarketDataExceptions.cs`) and are provider-neutral —
+  `SymbolNotFoundException`, `MarketDataRateLimitedException` (with `RetryAfter`),
+  `MarketDataUnavailableException`, `MarketDataTimeoutException`, all deriving from
+  `MarketDataException` — so the API maps them without knowing Yahoo exists. (Renamed from the
+  planned `Upstream*` names during milestone 3 for that reason.)
 - Why not `Result<T>` throughout: C# has no `?` propagation operator, so every layer gains
   unwrap/re-wrap boilerplate; and `HttpClient`/JSON/cancellation throw regardless, so a global
   handler is needed anyway — you'd run both mechanisms. Exceptions + `IExceptionHandler` is the
@@ -129,8 +137,15 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   typed results flow into OpenAPI). Versioned path prefix for forward compatibility.
 
 ### 2.5 Caching via `HybridCache` decorator on the provider
-- `CachedMarketDataProvider` decorates `YahooMarketDataProvider`; 5-min TTL (configurable),
-  1-min negative cache for not-found.
+- `CachedMarketDataProvider` decorates `YahooMarketDataProvider`; 5-min TTL (configurable via
+  `MarketData:Cache:Duration`). "Not found" is cached with the **same** TTL (changed from the
+  planned 1-min negative TTL: HybridCache sets expiry per call, not per result, so a separate TTL
+  needs a second cache key and lookup; symbols don't spring into existence within 5 minutes, so
+  the simpler single TTL was chosen). Rate-limit/timeout/unavailable failures are never cached.
+- The cache entry stores the timezone as its **system id** (or a fixed UTC offset for the fallback
+  zone). `TimeZoneInfo.ToSerializedString`/`FromSerializedString` was tried first and **fails for
+  ICU-backed IANA zones on Linux/macOS** (e.g. `Europe/London`: "AdjustmentRule array must be in
+  chronological order") — caught by a cache round-trip test.
 - Stampede protection matters because Yahoo rate-limits per IP. In-memory today; swappable to
   Redis via configuration.
 - Caches the **raw series**, not summaries, so future endpoints can reuse it.
@@ -255,8 +270,14 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   `AwayFromZero` rounding, snapshot-filter keep/drop cases (incl. HK final bar and Tokyo lunch
   bar), null bars, mismatched arrays, timezone fallback, request URL/User-Agent/escaping, cache
   hit / stampede / negative caching.
-- **Live Yahoo contract test** tagged `Category=Live`, **excluded from PR CI**, run nightly +
-  on demand as an early warning for upstream shape changes.
+- **Live Yahoo contract tests** (`Live/YahooLiveContractTests.cs`) are xUnit v3 **explicit** tests
+  (`[Fact(Explicit = true)]`) tagged `Category=Live`: they never run in a normal `dotnet test`
+  (local or PR CI) and run with `-- --explicit only` nightly and on demand, as an early warning for
+  upstream shape changes. They exercise the full production pipeline (DI, resilience, cache,
+  mapping).
+- **Fixture expected values are computed independently** (Python with exact decimal arithmetic over
+  the same JSON files) rather than by running the C# code and pasting its output — so a bug in the
+  C# aggregation can't silently become the expected value.
 - Coverage via MTP CodeCoverage + ReportGenerator — **reported, not gated** (thresholds encourage
   coverage-chasing tests).
   - Each test project writes to its **own** `TestResults/` (set via
@@ -380,7 +401,8 @@ of PR (code, docs, config, Dependabot) before it's considered done.
   jobs are fast enough to always run.
 
 ### 6.4 Live contract workflow (`live-contract.yml`)
-- Nightly `schedule` + `workflow_dispatch`; runs `Category=Live` against real Yahoo with one retry.
+- Nightly `schedule` + `workflow_dispatch`; runs the explicit `Category=Live` tests
+  (`-- --explicit only`) against real Yahoo with one retry.
 - **Not a required check** — never blocks merges; failure notifies the owner (early warning for
   upstream changes; tolerant of runner-IP throttling).
 
@@ -433,13 +455,30 @@ Things consciously **not** built for the MVP, why, and what would trigger revisi
 
 - [ ] Verify the trailing-snapshot rule against a **live (in-session)** Yahoo response — all probes
       so far were post-close (weekend).
+- [ ] Verify the CodeQL code-scanning merge gate on a **docs-only PR** (PR #6 contained code, so it
+      didn't prove the deadlock fix).
+- [ ] Retry behaviour of the resilience pipeline is configured but not exercised by a test (the
+      standard handler's exponential backoff would make it slow); covered by library tests and the
+      live contract test.
 
 ---
 
-## 9. End-of-project checklist
+## 9. Manual changes (outside AI)
+
+Changes made directly by the author, detected when reviewing merged code. Rationale to be filled
+in by the author.
+
+| Where | Change | Rationale |
+|---|---|---|
+| `StockSymbol.MaxLength` (PR #6) | 20 → **14** | _(author to fill in)_ |
+| `DailySummaryAggregator.Aggregate` (PR #6) | Added XML `<summary>` | _(author to fill in)_ |
+
+---
+
+## 10. End-of-project checklist
 
 - [ ] **Generate `PROMPT_LOG.md`** from this session's prompts. For each entry include: the prompt,
       what it was trying to achieve, what was kept/changed/rejected from the AI output and why —
       **plus an empty `My rationale:` block beside each prompt for the author to fill in manually.**
 - [ ] Write README "Design & Trade-offs" section from this file (sections 1–7).
-- [ ] Document any manual (non-AI) changes and their reasoning (deliverable #4).
+- [ ] Document any manual (non-AI) changes and their reasoning (deliverable #4) — see §9.
