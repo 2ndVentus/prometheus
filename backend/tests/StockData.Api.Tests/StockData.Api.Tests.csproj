@@ -1,6 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="NSubstitute" />
     <ProjectReference Include="..\..\src\StockData.Api\StockData.Api.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Shared with Infrastructure.Tests: real Yahoo payload for end-to-end tests. -->
+    <None Include="..\StockData.Infrastructure.Tests\Fixtures\Yahoo\tsla.json" Link="Fixtures\tsla.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
