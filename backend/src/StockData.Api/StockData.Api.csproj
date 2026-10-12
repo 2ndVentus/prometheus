@@ -5,4 +5,7 @@
     <ProjectReference Include="..\StockData.Application\StockData.Application.csproj" />
     <ProjectReference Include="..\StockData.Infrastructure\StockData.Infrastructure.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="StockData.Api.Tests" />
+  </ItemGroup>
 </Project>

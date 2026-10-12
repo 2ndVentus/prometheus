@@ -135,6 +135,17 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 ### 2.4 Endpoint: `GET /api/v1/stocks/{symbol}/daily-summary`
 - Minimal APIs with `MapGroup` + `TypedResults` (modern default, less ceremony than controllers,
   typed results flow into OpenAPI). Versioned path prefix for forward compatibility.
+- The route takes a raw `string` and parses it with `StockSymbol.TryParse` inside the handler, so an
+  invalid symbol returns a **descriptive 400 ValidationProblem** (`errors.symbol`, allowed
+  characters, examples). Binding `StockSymbol` directly via a static `TryParse` would also work but
+  yields a generic 400 with no explanation.
+- Response contract is `DailySummaryResponse` (separate from the domain record), serialized with a
+  source-generated `ApiJsonContext`. Prices use `CanonicalDecimalJsonConverter` (see hidden issue
+  #1): `382.7`, not `382.7000`. Precision is decided by the domain; the converter only normalises
+  representation.
+- Upstream 5xx-class problems return **generic details**; the exception (which may contain provider
+  internals) is logged, never returned. 404s include the symbol and a `BRK-B` hint. Every problem
+  carries `instance` and `traceId` for correlating with logs.
 
 ### 2.5 Caching via `HybridCache` decorator on the provider
 - `CachedMarketDataProvider` decorates `YahooMarketDataProvider`; 5-min TTL (configurable via
@@ -155,10 +166,21 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   timeout, circuit breaker.
 
 ### 2.7 Other host concerns
-- Our own per-IP rate limiter (protects the shared Yahoo quota from a single client).
+- Our own per-IP fixed-window rate limiter on `/api/v1/stocks` only (`RateLimiting:PermitLimit`,
+  default 30/min; `/health` exempt). Rejections are 429 ProblemDetails with `Retry-After`.
+- **Forwarded headers** trusted only from `ForwardedHeaders:KnownNetworks` (empty by default), so
+  rate limiting and logs see the real client IP behind nginx without letting arbitrary clients spoof
+  `X-Forwarded-For`. Docker Compose sets the network (milestone 6).
+- **No HTTPS redirection / HSTS in the app** (changed from the plan in hidden issue #5): TLS is
+  terminated at the reverse proxy, where HSTS belongs. In-app redirection behind an HTTP-only proxy
+  just logs "failed to determine the https port" and can cause redirect loops.
+- Middleware order: forwarded headers → exception handler → status code pages → CORS → rate
+  limiter → endpoints. Verified by tests that CORS headers (and exposed `Retry-After`) survive on
+  error responses.
 - `/health` endpoint; built-in OpenAPI with Scalar UI in Development.
 - Config via Options pattern with `ValidateOnStart` (base URL, User-Agent, interval, range, TTLs).
-- CORS policy from config (dev uses the Vite proxy instead).
+- CORS default policy from `Cors:AllowedOrigins` (empty by default — local dev and Docker are
+  same-origin via proxies), GET only, exposes `Retry-After`.
 - `CancellationToken` flows end-to-end so abandoned requests cancel the upstream call.
 - Source-generated `JsonSerializerContext` for Yahoo DTOs; wire DTOs kept separate from domain
   records.
@@ -306,11 +328,11 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 
 | # | Issue | Mitigation |
 |---|---|---|
-| 1 | **Decimal keeps its scale in JSON** (verified: `382.70001220703125m` → `382.7000`; Yahoo `2910.0` → `2910.0`) — inconsistent output | `PriceJsonConverter` writes canonical shortest form; rounding stays in the domain; raw-JSON integration test |
+| 1 | **Decimal keeps its scale in JSON** (verified: `382.70001220703125m` → `382.7000`; Yahoo `2910.0` → `2910.0`) — inconsistent output | `CanonicalDecimalJsonConverter` writes canonical shortest form; rounding stays in the domain; raw-JSON integration tests ✅ |
 | 2 | **`HybridCache` serializes values even in L1** unless `sealed` + `[ImmutableObject(true)]`; `TimeZoneInfo` isn't serializable | Cache a serializable DTO with the timezone **id string**; mark immutable; resolve `TimeZoneInfo` after retrieval |
-| 3 | **CORS headers missing on error responses** → browser shows opaque network error instead of 404 message; `Retry-After` unreadable cross-origin | Middleware order (CORS before exception handler/endpoints), `WithExposedHeaders("Retry-After")`, integration test |
+| 3 | **CORS headers missing on error responses** → browser shows opaque network error instead of 404 message; `Retry-After` unreadable cross-origin | CORS applies headers in `OnStarting`, so they survive the exception handler clearing the response; `WithExposedHeaders("Retry-After")`; integration tests ✅ |
 | 4 | **macOS AirPlay occupies port 5000** | API on **5080**, Vite on 5173 |
-| 5 | **HTTPS dev-cert friction** for reviewers | HTTP launch profile locally; HTTPS redirect/HSTS only outside Development |
+| 5 | **HTTPS dev-cert friction** for reviewers | HTTP launch profile locally; TLS/HSTS at the reverse proxy, not in the app (see §2.7) |
 | 6 | **Vite proxy absent in `vite preview`** | Configure `preview.proxy`; `VITE_API_BASE_URL` for deployments |
 | 7 | **Retry amplification** (frontend × backend retries; retrying 429 worsens throttling) | Backend owns the retry budget (≤2, honours `Retry-After`, circuit breaker); frontend retries once on 502/504 only |
 | 8 | **Per-IP rate limit behind a proxy** collapses all users into one bucket | `UseForwardedHeaders` with configurable known proxies |
@@ -318,7 +340,7 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 | 10 | **Today's row is partial** during market hours | UI footnote; round once after averaging |
 | 11 | **Fewer days/bars than expected** (holidays, half-days, new listings) | No code assumes fixed counts; tests for short/empty series |
 | 12 | **Special characters in symbols** (`^`, `=`, `-`) | `encodeURIComponent` / `Uri.EscapeDataString`; route accepts them; tested both sides |
-| 13 | **Client aborts logged as 500s** | Treat request-aborted cancellation as non-error (499, debug log) |
+| 13 | **Client aborts logged as 500s** | `MarketDataExceptionHandler` treats request-aborted cancellation as non-error (499, debug log) ✅ |
 | 14 | **Chart y-axis from 0** flattens price lines | Padded `dataMin`/`dataMax` price domain; volume on a secondary axis |
 | 15 | **Recharts in jsdom / React 19** | Recharts 3.x; `ResizeObserver` stub in Vitest setup |
 | 16 | **`VITE_*` env baked at build time** | Accepted for MVP (see deferrals) |
@@ -457,6 +479,8 @@ Things consciously **not** built for the MVP, why, and what would trigger revisi
       so far were post-close (weekend).
 - [ ] Verify the CodeQL code-scanning merge gate on a **docs-only PR** (PR #6 contained code, so it
       didn't prove the deadlock fix).
+- [ ] Forwarded-headers trust (`ForwardedHeaders:KnownNetworks`) is configured but only verifiable
+      behind a real proxy — check per-client rate limiting through nginx in milestone 6.
 - [ ] Retry behaviour of the resilience pipeline is configured but not exercised by a test (the
       standard handler's exponential backoff would make it slow); covered by library tests and the
       live contract test.
