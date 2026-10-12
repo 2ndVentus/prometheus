@@ -446,8 +446,8 @@ Identified during design; ✅ = verified by a test or by hand.
   **rebase** for milestone PRs so their individual commits stay visible on `main`. Head branches
   are deleted on merge; "update branch" is suggested; auto-merge is off.
 - **Dependabot**: weekly, grouped per ecosystem — nuget, npm, github-actions, dotnet-sdk, docker.
-  Major updates to `@types/node` (must match the Node 24 runtime) and `typescript` (TS 7 is a new
-  native compiler needing deliberate verification) are ignored.
+  Major updates to `@types/node` and the Docker `node` image (both must match the Node 24 runtime)
+  and to `typescript` (TS 7 is a new native compiler needing deliberate verification) are ignored.
 - **CodeQL advanced setup** (`codeql.yml`; C#, TypeScript, Actions; `security-and-quality`
   queries; C# `build-mode: none`) on every PR, every push to `main` and weekly. Its findings are
   fixed rather than dismissed (e.g. undisposed test objects, float multiplication, `Path.Combine`).
@@ -506,6 +506,9 @@ a public repo, reproducible from a file.
 | #8 | API host: endpoint, error mapping, CORS, rate limiting, OpenAPI |
 | #9 | Frontend: data layer, charts, table, states |
 | #10 | Docker Compose stack, docker CI job, live contract workflow |
+| #13 | Design decisions restructured and checked against the code (first docs-only PR under the CodeQL gate) |
+| #14 | Instrument metadata endpoint (backend) — shares the cached upstream call with the summary |
+| #15 | Instrument name, exchange, type and quote currency in the UI |
 | — | Documentation: README, `PROMPT_LOG.md` |
 
 ---
@@ -547,7 +550,8 @@ Consciously **not** built for the MVP, why, and what would trigger revisiting.
 
 - [ ] Verify the trailing-snapshot rule on a **live in-session** response (probes were post-close;
       the weekday live workflow now runs during the US session).
-- [ ] Verify the CodeQL merge gate on a **docs-only PR** (every PR since the fix contained code).
+- [x] CodeQL merge gate verified on a **docs-only PR**: #13 ran CodeQL and merged — the deadlock
+      fix (§6.3) works.
 - [ ] The resilience pipeline's retry behaviour is configured but not exercised by a test (the
       standard backoff would make it slow); covered by the library's own tests and the live tests.
 
@@ -555,20 +559,14 @@ Consciously **not** built for the MVP, why, and what would trigger revisiting.
 
 ## 10. Manual changes (outside AI)
 
-Changes made directly by the author, detected when reviewing merged code.
-
-| Where | Change | Rationale |
-|---|---|---|
-| `StockSymbol.MaxLength` (PR #6) | 20 → **14** | _(author to fill in)_ |
-| `DailySummaryAggregator.Aggregate` (PR #6) | Added an XML `<summary>` | _(author to fill in)_ |
+Recorded, with the author's reasoning, in the README's
+[Manual changes](../README.md#manual-changes-outside-ai) section (deliverable 4).
 
 ---
 
 ## 11. End-of-project checklist
 
-- [ ] Generate `PROMPT_LOG.md` from the session's prompts — for each: the prompt, what it aimed to
-      achieve, what was kept/changed/rejected and why, plus an empty **`My rationale:`** block for
-      the author.
-- [ ] Write the README (setup and run for both paths, API reference, design & trade-offs from this
-      file).
-- [ ] Author fills in the rationale for the manual changes (§10).
+- [x] `PROMPT_LOG.md` generated — prompt, intent, outcome, kept/changed/rejected, with an empty
+      **My rationale** field per entry for the author.
+- [x] README: setup and run for both paths, tests, API reference, configuration, design summary.
+- [ ] Author fills in the **My rationale** fields and the manual-changes reasoning.
