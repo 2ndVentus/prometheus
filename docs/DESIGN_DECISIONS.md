@@ -302,14 +302,33 @@ ProblemDetails and `Retry-After` (seconds or date).
 - **Short history note**: fewer than 15 trading days shows "Only N trading days of data…", so the
   "last month" heading doesn't mislead for new listings (PAXGU had 4) or suspended symbols.
 
-### 3.6 Formatting
+### 3.6 Instrument details (`features/instrument/`)
+- A separate feature module (schema, API call, hook, labels, `InstrumentHeader`) used by the summary
+  view; requested in parallel with the summary — the backend serves both from one cached upstream
+  call.
+- **Heading = the instrument's name** ("Tesla, Inc."), with `ticker · exchange · type` above it;
+  falls back to the ticker. Only details for the *current* symbol are shown, so a slow response for
+  a previous symbol can't label the new one.
+- **Never blocks the summary**: while loading, or if it fails, the page shows the ticker as before —
+  metadata is an enhancement, so it has no error UI of its own.
+- **Type labels**: EQUITY → Stock, CURRENCY → Currency pair, CRYPTOCURRENCY → Cryptocurrency, etc.;
+  unknown types are shown sentence-cased rather than hidden.
+- **Exchange shown only for exchange-traded instruments**: indices, FX and crypto report terse codes
+  (`SNP`, `CCY`, `CCC`) that would read as noise.
+- **Currency as a unit, not a symbol**: in the subtitle ("prices in USD"), the price column headers
+  ("Low average (USD)") and the footnote. Minor units are spelled out — `GBp` = pence sterling,
+  `ZAc` = South African cents, `ILA` = Israeli agorot — because formatting them as the major
+  currency would overstate prices 100×. Numbers stay unformatted by currency for the same reason.
+- The shared retry policy and stale time moved to `src/api/retryPolicy.ts`, used by both hooks.
+
+### 3.7 Formatting
 - Prices at a **fixed 4 dp** in table and tooltip (the API's precision; aligned columns).
-- **No currency symbol**: the contract has no currency and some instruments aren't USD (VOD.L is in
-  pence).
+- **No currency symbol on numbers**: the currency is shown as a unit in headers instead (§3.6), so
+  pence never read as pounds.
 - `day` is a calendar date, not an instant: it is never passed to `new Date("yyyy-MM-dd")` (UTC
   midnight → the previous day west of UTC); formatting builds it in UTC.
 
-### 3.7 Input and accessibility
+### 3.8 Input and accessibility
 - Input trimmed and upper-cased; the backend's symbol rule is mirrored for instant feedback (the
   backend stays the authority). Search on submit; example chips (TSLA, AAPL, ^GSPC, VOD.L, 7203.T);
   submit disabled while loading.

@@ -7,7 +7,15 @@ import {
 } from '../../lib/format'
 import type { DailySummary } from './schema'
 
-export function DailySummaryTable({ symbol, data }: { symbol: string; data: DailySummary[] }) {
+interface DailySummaryTableProps {
+  symbol: string
+  data: DailySummary[]
+  /** Quote currency for the price headers, e.g. "USD" or "GBp"; omitted when unknown. */
+  currencyUnit?: string | null
+}
+
+export function DailySummaryTable({ symbol, data, currencyUnit = null }: DailySummaryTableProps) {
+  const unit = currencyUnit ? ` (${currencyUnit})` : ''
   const newestFirst = [...data].reverse()
 
   return (
@@ -20,10 +28,10 @@ export function DailySummaryTable({ symbol, data }: { symbol: string; data: Dail
               Day
             </th>
             <th scope="col" className="px-3 py-2 text-right font-medium sm:px-4">
-              Low average
+              Low average{unit}
             </th>
             <th scope="col" className="px-3 py-2 text-right font-medium sm:px-4">
-              High average
+              High average{unit}
             </th>
             <th scope="col" className="px-3 py-2 text-right font-medium sm:px-4">
               Volume
