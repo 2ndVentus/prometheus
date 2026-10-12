@@ -13,7 +13,7 @@ namespace StockData.Application.Domain;
 /// </remarks>
 public sealed partial record StockSymbol
 {
-    public const int MaxLength = 20;
+    public const int MaxLength = 14;
 
     private StockSymbol(string value) => Value = value;
 
