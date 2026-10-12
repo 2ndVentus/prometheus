@@ -20,7 +20,8 @@ public sealed class EndToEndTests
     public async Task Get_Tsla_FromCapturedYahooResponse_ReturnsExpectedSummaries()
     {
         var yahoo = StubYahooHandler.Fixture("tsla.json");
-        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        await using var baseFactory = new WebApplicationFactory<Program>();
+        await using var factory = baseFactory.WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
                 services.AddHttpClient(YahooHttpClientName).ConfigurePrimaryHttpMessageHandler(() => yahoo)));
         using var client = factory.CreateClient();
@@ -42,7 +43,8 @@ public sealed class EndToEndTests
     {
         const string notFound = """{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found, symbol may be delisted"}}}""";
         var yahoo = new StubYahooHandler(HttpStatusCode.NotFound, notFound);
-        await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        await using var baseFactory = new WebApplicationFactory<Program>();
+        await using var factory = baseFactory.WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
                 services.AddHttpClient(YahooHttpClientName).ConfigurePrimaryHttpMessageHandler(() => yahoo)));
         using var client = factory.CreateClient();
