@@ -209,8 +209,10 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 ### 3.3 Data fetching: TanStack Query
 - Built-in loading/error/cache states, request cancellation via `signal` when the symbol changes,
   no hand-rolled `useEffect` race conditions.
-- Retry only on 502/503/504 (never 400/404); `staleTime` 5 min to match the backend cache;
-  `placeholderData` keeps the previous result visible while a new symbol loads.
+- Retry **once, only on 502/504** (never 4xx, and not 503 — the backend owns the retry budget and
+  has already retried before returning 503; see hidden issue #7). `staleTime` 5 min to match the
+  backend cache; `placeholderData` keeps the previous result on screen, dimmed and `aria-busy`,
+  while a new symbol loads (no spinner flash).
 
 ### 3.4 Runtime response validation: zod
 - TS types vanish at runtime; zod makes contract drift fail loudly instead of rendering `NaN`.
@@ -219,26 +221,64 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 ### 3.5 Typed `ApiError` from ProblemDetails → friendly messages
 | Status | Message |
 |---|---|
-| 400 | "That doesn't look like a valid ticker." |
-| 404 | "No data found for 'XYZ'. Check the symbol (e.g. `BRK-B`, not `BRK.B`)." |
-| 503 | "Market data provider is busy — try again in a moment." |
-| network / 5xx | Generic message + Retry button |
+| 400 | "Invalid symbol" — no retry |
+| 404 | "No data for XYZ" + `BRK-B` / `VOD.L` hints — no retry |
+| 429 / 503 | "Slow down" / "provider is busy" + **"Try again in N seconds"** from `Retry-After` |
+| 504 / other 5xx | Generic timeout / unavailable text (server detail never shown) + Try again |
+| network / unparseable or off-contract body | "Can't reach the server" / "Unexpected response" + Try again |
+| 502/503/504 **without** ProblemDetails | "Can't reach the server", no automatic retry — see below |
+
+- **A gateway status without ProblemDetails means our own API is down**, not the market data
+  provider. Our API answers every error with ProblemDetails, so a bare 502/503/504 came from a proxy
+  in front of it (Vite dev proxy, nginx). Found by stopping the backend during manual testing: the
+  UI said "Market data unavailable" and retried, which was both wrong and pointless. These are now
+  `kind: 'network'` and aren't retried.
 
 ### 3.6 URL state (`?symbol=TSLA`)
 - Shareable, bookmarkable, back-button and refresh friendly. A small `URLSearchParams` hook — no
   router needed for a single view.
 
 ### 3.7 Visualization: chart **and** table
-- **Recharts** `ComposedChart`: shaded band between `lowAverage` and `highAverage` + volume bars on
-  a secondary axis. Declarative, typed, testable.
+- **Two charts on one shared time axis, not a dual-axis chart** (changed during build: the dataviz
+  guidance lists dual axes as the #1 chart mistake — two y-scales on one plot invite false
+  correlations). Price chart: `highAverage` and `lowAverage` lines (2px) with the daily range as a
+  10% wash; volume chart below (columns ≤24px, 4px rounded tops). `syncId` links the crosshair, and
+  **one tooltip lists every value** for the hovered day.
+- **Palette validated, not eyeballed**: categorical slots blue/orange/aqua checked with the palette
+  validator in both modes, all pairs (worst CVD ΔE 9.2 light / 9.4 dark; normal-vision ≥ 20.9).
+  Light-mode aqua is < 3:1 against the surface, which is permitted because the table carries every
+  value. Colours live in `chartTheme.ts` as concrete values: SVG presentation attributes don't
+  reliably resolve CSS custom properties.
+- **Round axis ticks** (`niceTicks`: steps of 1/2/2.5/5 × 10ⁿ) — Recharts spaces ticks evenly between
+  the domain ends, which produced labels like `376.6388`. The price axis hugs the data (never from 0).
+  Every tick on an axis uses the same number of decimals (`9.990 / 9.995 / 10.000`, not
+  `9.99 / 9.995 / 10`) — found testing PAXGU, a ~$10 SPAC unit.
+- **Short history note**: fewer than 15 trading days (a month is ~20–23, Tokyo had 19 with
+  holidays) shows "Only N trading days of data…" so the "last month" heading doesn't mislead for
+  new listings (PAXGU had 4) or suspended symbols. The API has no listing date, so the note doesn't
+  claim which reason applies.
+- Accessibility: `<figure>`/`<figcaption>` + Recharts `title`/`desc` on each SVG (not `role="img"`,
+  which would hide Recharts' keyboard navigation layer); legend with line keys; table is the full
+  text equivalent.
+- **Lazy-loaded** (`React.lazy`): Recharts is most of the bundle — initial JS went from 212 kB to
+  105 kB gzipped; the chart chunk (111 kB) loads on demand behind a same-size placeholder.
+- **Error boundary** around the chart (keyed by symbol): a chart render error or a failed lazy-chunk
+  download after a deploy degrades to "chart unavailable — see table" instead of unmounting the app.
   - Rejected: TradingView `lightweight-charts` (built for OHLC candles we don't have; imperative
     canvas API), Chart.js (imperative, weaker React integration).
 - Semantic `<table>` (newest first, right-aligned tabular numerals) — doubles as the chart's
-  accessible equivalent.
-- Optional summary stats (period high/low averages, total/avg volume).
+  accessible equivalent. On phones it shows short dates and compact volume so all four columns fit;
+  screen readers always get the full date and number.
+- Summary stat tiles: trading days (range), lowest low average, highest high average, average daily
+  volume. Headline prices ≥ 1,000 show **2 dp** (4 dp is noise on `86,099.2480` and overflowed the
+  tile for BTC-USD); the exact value is on hover and in the table/tooltip. Tiles size their value
+  with a **container query** (font steps with the tile's own width) and sit two per row until `lg`,
+  so long figures shrink instead of overflowing — verified at 375/640/1024/1440px.
 
 ### 3.8 Formatting
-- `Intl.NumberFormat`: 4 dp for prices; compact volume on axes ("49.1M"), full in the table.
+- `Intl.NumberFormat`: prices at a **fixed 4 dp** in the table/tooltip/stats (the API's precision;
+  fixed so numbers align and compare at a glance); compact volume on axes ("49.1M"); full volume
+  in the table on wider screens.
 - **No currency symbol** — the bare-array contract carries no currency and some symbols are not
   USD (VOD.L is in GBp/pence). Showing `$` would be wrong.
 - `day` is treated as a **string label**, never `new Date("yyyy-MM-dd")` (parses as UTC midnight →
@@ -246,15 +286,20 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 
 ### 3.9 Styling: Tailwind CSS (v4, `@tailwindcss/vite`)
 - Chosen over CSS Modules for development speed and colocated styling; design tokens via
-  Tailwind theme variables; dark mode via the `dark:` variant (follows `prefers-color-scheme`).
+  Tailwind `@theme` variables (values from the dataviz reference chrome); dark mode redefines the
+  same variables under `prefers-color-scheme: dark` — separately chosen dark steps, not an inversion.
 - No component library (MUI etc.) — unnecessary bundle weight for a single view.
 
 ### 3.10 Input UX & accessibility
 - Trim + upper-case; client-side regex mirrors the backend (UX only — backend remains the
   authority). Submit-based search, example chips (TSLA, AAPL, ^GSPC, VOD.L), disabled submit while
   in flight; new search cancels the old one.
-- Labelled input, `role="alert"` error region, chart `aria-label` with the table as text
-  equivalent, keyboard-operable, contrast-checked in both themes.
+- Labelled input with `aria-invalid`/`aria-describedby`, example chips in a `<fieldset>`, loading in
+  an `<output>` (implicit `role="status"`), errors in `role="alert"`, keyboard-operable, contrast
+  checked in both themes. (oxlint's jsx-a11y rules caught several `role=` attributes that had native
+  element equivalents.)
+- State in the URL (`useSyncExternalStore` over `popstate`); the form is keyed by symbol so
+  back/forward resets the input. Invalid `?symbol=` values are ignored.
 
 ### 3.11 API base URL
 - Dev: Vite proxy `/api` → backend (no CORS, zero env config to run).
@@ -341,8 +386,8 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 | 11 | **Fewer days/bars than expected** (holidays, half-days, new listings) | No code assumes fixed counts; tests for short/empty series |
 | 12 | **Special characters in symbols** (`^`, `=`, `-`) | `encodeURIComponent` / `Uri.EscapeDataString`; route accepts them; tested both sides |
 | 13 | **Client aborts logged as 500s** | `MarketDataExceptionHandler` treats request-aborted cancellation as non-error (499, debug log) ✅ |
-| 14 | **Chart y-axis from 0** flattens price lines | Padded `dataMin`/`dataMax` price domain; volume on a secondary axis |
-| 15 | **Recharts in jsdom / React 19** | Recharts 3.x; `ResizeObserver` stub in Vitest setup |
+| 14 | **Chart y-axis from 0** flattens price lines | Round-tick price domain hugging the data; volume in its own chart (no dual axis) ✅ |
+| 15 | **Recharts in jsdom / React 19** | Recharts 3.x; `ResizeObserver` stub in Vitest setup; chart tests mock `ResponsiveContainer` with a fixed size ✅ |
 | 16 | **`VITE_*` env baked at build time** | Accepted for MVP (see deferrals) |
 | 17 | **Yahoo API is unofficial** (no SLA, ToS restrictions, may add cookie/crumb auth) | `IMarketDataProvider` abstraction; nightly live contract test; configurable host |
 | 18 | **GitHub Actions IPs throttled by Yahoo** | Live job non-blocking, single retry, clear reporting |
@@ -459,6 +504,8 @@ Things consciously **not** built for the MVP, why, and what would trigger revisi
 | TanStack Table (sorting/paging) | ~22 rows; semantic `<table>` suffices | Larger datasets or interactive table needs |
 | Client-side router | Single view; URL search params cover shareable state | A second page/route is added |
 | Component library (MUI etc.) | Bundle weight for one view; Tailwind covers it | Design system requirements emerge |
+| Light/dark theme toggle | Follows the OS setting (`prefers-color-scheme`); a toggle adds state and a persisted preference | Users ask for it |
+| MSW in the browser (dev mock mode) | Tests use MSW in Node only; postinstall worker copy denied | Frontend work needs to proceed without the backend |
 | Authentication / API keys | Public read-only data; per-IP rate limit protects upstream quota | Any user-specific data or paid upstream |
 | Playwright end-to-end tests | Integration tests on both sides of the HTTP boundary cover the contract; E2E adds CI complexity (both apps + stubbed upstream) | Multiple user flows / pages |
 | Mutation testing (Stryker) | Heavyweight for an MVP | Test-suite quality becomes a concern |
