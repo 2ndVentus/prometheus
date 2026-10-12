@@ -1,5 +1,8 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { ErrorBoundary } from '../../components/ErrorBoundary'
+import { InstrumentHeader } from '../instrument/InstrumentHeader'
+import { currencyLabel, currencyUnit } from '../instrument/labels'
+import { useInstrument } from '../instrument/useInstrument'
 import { DailySummaryTable } from './DailySummaryTable'
 import { describeError } from './errorMessages'
 import { SummaryStats } from './SummaryStats'
@@ -19,6 +22,7 @@ const SHORT_HISTORY_DAYS = 15
 
 export function DailySummaryView({ symbol }: { symbol: string | null }) {
   const query = useDailySummary(symbol)
+  const instrument = useInstrument(symbol)
 
   if (symbol === null) {
     return (
@@ -67,6 +71,7 @@ export function DailySummaryView({ symbol }: { symbol: string | null }) {
   const data = query.data
   // While a new symbol loads, the previous result stays on screen (dimmed) instead of flashing a spinner.
   const showingPrevious = query.isPlaceholderData
+  const currency = currencyLabel(instrument?.currency ?? null)
 
   if (data.length === 0) {
     return (
@@ -82,11 +87,12 @@ export function DailySummaryView({ symbol }: { symbol: string | null }) {
       aria-busy={showingPrevious}
       className={`flex flex-col gap-4 transition-opacity ${showingPrevious ? 'opacity-50' : ''}`}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 id="results-heading" className="text-xl font-semibold">
-          {showingPrevious ? `Loading ${symbol}…` : `${symbol} — last month`}
-        </h2>
-        <p className="text-ink-muted text-sm">Days are the exchange's local trading days</p>
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+        <InstrumentHeader symbol={symbol} instrument={instrument} loading={showingPrevious} />
+        <p className="text-ink-muted text-sm">
+          Last month{currency ? ` · prices in ${currency}` : ''} · days are the exchange's local
+          trading days
+        </p>
       </div>
       {!showingPrevious && data.length < SHORT_HISTORY_DAYS && (
         <p className="border-border bg-surface text-ink-secondary rounded-lg border px-4 py-2 text-sm">
@@ -101,10 +107,15 @@ export function DailySummaryView({ symbol }: { symbol: string | null }) {
           <DailySummaryChart symbol={symbol} data={data} />
         </Suspense>
       </ErrorBoundary>
-      <DailySummaryTable symbol={symbol} data={data} />
+      <DailySummaryTable
+        symbol={symbol}
+        data={data}
+        currencyUnit={currencyUnit(instrument?.currency ?? null)}
+      />
       <p className="text-ink-muted text-xs">
-        Averages of 15-minute bar lows and highs, in the instrument's trading currency. The most
-        recent day may be incomplete during market hours. Source: Yahoo Finance.
+        Averages of 15-minute bar lows and highs, in{' '}
+        {currency ?? "the instrument's trading currency"}. The most recent day may be incomplete
+        during market hours. Source: Yahoo Finance.
       </p>
     </section>
   )

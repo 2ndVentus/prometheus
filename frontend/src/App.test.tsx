@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { App } from './App'
 import { renderWithClient } from './test/render'
-import { DAILY_SUMMARY_URL, problem, server } from './test/server'
+import { DAILY_SUMMARY_URL, INSTRUMENT_URL, problem, server } from './test/server'
 
 function renderAt(search = '') {
   window.history.replaceState(null, '', `/${search}`)
@@ -25,7 +25,7 @@ describe('App', () => {
 
     await user.type(screen.getByLabelText('Ticker symbol'), 'tsla{Enter}')
 
-    expect(await screen.findByRole('heading', { name: 'TSLA — last month' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Tesla, Inc.' })).toBeInTheDocument()
     expect(window.location.search).toBe('?symbol=TSLA')
   })
 
@@ -133,6 +133,46 @@ describe('App', () => {
     expect(screen.queryByText(/trading days? of data/i)).not.toBeInTheDocument()
   })
 
+  it('shows instrument details: name, exchange, type and the quote currency', async () => {
+    renderAt('?symbol=TSLA')
+
+    expect(await screen.findByRole('heading', { name: 'Tesla, Inc.' })).toBeInTheDocument()
+    expect(screen.getByText('TSLA · NasdaqGS · Stock')).toBeInTheDocument()
+    expect(screen.getByText(/prices in USD/)).toBeInTheDocument()
+    const table = screen.getByRole('table')
+    expect(
+      within(table).getByRole('columnheader', { name: 'Low average (USD)' }),
+    ).toBeInTheDocument()
+  })
+
+  it('spells out pence for London prices', async () => {
+    server.use(
+      http.get(INSTRUMENT_URL, () =>
+        HttpResponse.json({
+          symbol: 'VOD.L',
+          longName: 'Vodafone Group Public Limited Company',
+          currency: 'GBp',
+          exchangeName: 'LSE',
+          instrumentType: 'EQUITY',
+        }),
+      ),
+    )
+    renderAt('?symbol=VOD.L')
+
+    expect(await screen.findByText(/prices in GBp — pence sterling/)).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'High average (GBp)' })).toBeInTheDocument()
+  })
+
+  it('still shows the summary when instrument details fail', async () => {
+    server.use(http.get(INSTRUMENT_URL, () => problem(502, 'Market data provider error')))
+    renderAt('?symbol=TSLA')
+
+    expect(await screen.findByRole('table')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('TSLA')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Low average' })).toBeInTheDocument()
+  })
+
   it('shows an empty state when there were no trading days', async () => {
     server.use(http.get(DAILY_SUMMARY_URL, () => HttpResponse.json([])))
     renderAt('?symbol=NEWIPO')
@@ -144,14 +184,14 @@ describe('App', () => {
 
   it('follows browser back navigation', async () => {
     const { user } = renderAt('?symbol=TSLA')
-    await screen.findByRole('heading', { name: 'TSLA — last month' })
+    await screen.findByRole('heading', { name: 'Tesla, Inc.' })
 
     await user.click(screen.getByRole('button', { name: 'AAPL' }))
-    await screen.findByRole('heading', { name: 'AAPL — last month' })
+    await screen.findByRole('heading', { name: 'AAPL' })
     window.history.back()
 
     await waitFor(() => expect(window.location.search).toBe('?symbol=TSLA'))
-    expect(await screen.findByRole('heading', { name: 'TSLA — last month' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Tesla, Inc.' })).toBeInTheDocument()
     expect(screen.getByLabelText('Ticker symbol')).toHaveValue('TSLA')
   })
 })
