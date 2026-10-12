@@ -80,7 +80,7 @@ internal static class StockEndpoints
             {
                 ["symbol"] =
                 [
-                    $"'{symbol}' is not a valid ticker. Use 1-{StockSymbol.MaxLength} letters, digits or . - ^ = (e.g. TSLA, BRK-B, ^GSPC).",
+                    $"'{symbol}' is not a valid ticker. Use 1-{StockSymbol.MaxLength} letters, digits or . - ^ =, including at least one letter or digit (e.g. TSLA, BRK-B, ^GSPC).",
                 ],
             },
             title: "Invalid stock symbol");

@@ -108,7 +108,7 @@ entry per day, oldest first.
 | `volume` | Total volume traded that day |
 
 **Symbols** are Yahoo tickers, case-insensitive, 1–14 characters of letters, digits and
-`. - ^ =` — e.g. `TSLA`, `BRK-B` (not `BRK.B`), `^GSPC`, `VOD.L`, `EURUSD=X`.
+`. - ^ =`, with at least one letter or digit — e.g. `TSLA`, `BRK-B` (not `BRK.B`), `^GSPC`, `VOD.L`, `EURUSD=X`.
 
 **Errors** are RFC 7807 ProblemDetails (`application/problem+json`) with a `traceId`:
 
@@ -116,7 +116,7 @@ entry per day, oldest first.
 |---|---|
 | 400 | The symbol isn't a valid ticker format (`errors.symbol` explains) |
 | 404 | Yahoo has no data for the symbol |
-| 429 | You exceeded the per-client rate limit (30/min by default); `Retry-After` says when to retry |
+| 429 | You exceeded the per-client rate limit (60/min by default — each symbol lookup in the UI uses two calls); `Retry-After` says when to retry |
 | 502 | Yahoo returned an error or an unexpected response |
 | 503 | Yahoo is rate-limiting us; `Retry-After` when Yahoo provided one |
 | 504 | Yahoo didn't respond in time |
@@ -205,7 +205,7 @@ startup.
 | `MarketData:Yahoo:Interval` / `Range` | `15m` / `1mo` (allow-listed) |
 | `MarketData:Yahoo:MaxRetryAttempts` / `AttemptTimeout` / `TotalRequestTimeout` | 2 / 4 s / 10 s |
 | `MarketData:Cache:Duration` | 5 minutes |
-| `RateLimiting:PermitLimit` / `Window` | 30 / 1 minute, per client |
+| `RateLimiting:PermitLimit` / `Window` | 60 / 1 minute, per client |
 | `Cors:AllowedOrigins` | none (frontend is same-origin via a proxy) |
 | `ForwardedHeaders:KnownNetworks` | none (Docker Compose trusts its own subnet) |
 
@@ -261,7 +261,8 @@ one class away, and a scheduled live contract test gives early warning of change
 This project was built with Claude (Claude Code, Opus 5.5) as a pair: a design review in six steps (API,
 backend, frontend, testing, hidden issues, setup/CI), then seven milestones and an instrument
 metadata feature, each delivered as a PR the author reviewed before it was committed. **[PROMPT_LOG.md](PROMPT_LOG.md)** lists every prompt,
-what it was for, and what was kept, changed or rejected.
+what it was for, and what was kept, changed or rejected. The full conversation is in
+**[docs/CHAT_TRANSCRIPT.md](docs/CHAT_TRANSCRIPT.md)**.
 
 ## Manual changes (outside AI)
 

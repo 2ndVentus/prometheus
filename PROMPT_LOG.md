@@ -6,7 +6,9 @@ or rejected and why. The **My rationale** field is filled in by the author.
 
 The work ran in three phases: a **six-step design review** (prompts 1–12), **seven milestones**
 delivered as pull requests (prompts 13–35), and an **instrument metadata feature** added in two
-stages after the author paused the documentation milestone (prompts 36–40). Decisions are recorded in
+stages after the author paused the documentation milestone (prompts 36–40), followed by a final
+review and its fixes (prompts 41–43). The full conversation is in
+[docs/CHAT_TRANSCRIPT.md](docs/CHAT_TRANSCRIPT.md). Decisions are recorded in
 [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md).
 
 ---
@@ -578,11 +580,58 @@ stages after the author paused the documentation milestone (prompts 36–40). De
 - **What came back:** stash restored onto a fresh branch (it merged cleanly with the metadata
   changes to the design record), keeping the author's README edits; README, design record and this
   log updated for the new endpoint and UI.
-- **Kept / changed / rejected:** _(review pending)_
+- **Kept / changed / rejected:** kept; the author committed and merged it as PR #16.
 - **My rationale:**
 
 
 - Returned to this document to finish up the documentation
+### 41. Final review of the whole codebase
+
+> Do one last review of the entire codebase searching for issues
+
+- **Asked for:** a review of everything, not just the latest diff.
+- **What came back:** every backend and frontend source file, config, Dockerfiles, nginx and CI
+  read and probed; `npm audit` and NuGet vulnerability scans (none). Five findings, none in the core
+  data path: (1) `StockSymbol` accepted punctuation-only input — `..` would make the upstream URL
+  resolve to a different Yahoo path (blocked over HTTP by ASP.NET's dot-segment normalisation, but
+  the type allowed it) and `...` cost a pointless Yahoo call; (2) the rate limit was effectively
+  halved by the UI's two calls per symbol; (3) re-searching the current symbol added a duplicate
+  history entry; (4) the form was disabled during slow requests, contradicting "a new search
+  cancels the old one"; (5) Vite's default favicon and an inconsistent page title. Proposed fixing
+  them on a separate branch rather than in the docs PR.
+- **Kept / changed / rejected:** all five accepted.
+- **My rationale:**
+
+  double checking the work to mitigate any unexpected issues
+### 42. Fix the findings
+
+> I merged the current branch, go ahead with the fixes + update prompt_log
+
+- **Asked for:** implement the five fixes and record them here.
+- **What came back:** symbols must contain a letter or digit (backend and frontend, with tests;
+  verified live that `...`, `^`, `-` now return 400 without calling Yahoo); default rate limit 60/min
+  (≈ 30 lookups); no duplicate history entries (the test was confirmed to fail without the fix); the
+  form stays usable while loading, with a spinner and `aria-busy`; a chart favicon and the symbol in
+  the page title. README and design record updated.
+- **Kept / changed / rejected:** _(review pending)_
+- **My rationale:**
+
+  
+- Saw no issues with the proposed changes, reviewed afterwards and merged.
+### 43. Add the whole chat to the repo
+
+> Can you also add a copy of this entire chat to the docs folder?
+
+- **Asked for:** the complete conversation alongside this log.
+- **What came back:** `docs/CHAT_TRANSCRIPT.md`, generated from the session transcript: every
+  author message and Claude reply verbatim, tool calls as one-line summaries. Because the repo is
+  public, app-injected context (which includes the author's email), raw tool output, internal
+  reasoning and local home-directory paths were left out, and the result was scanned for personal
+  data and credentials before committing.
+- **Kept / changed / rejected:** _(review pending)_
+- **My rationale:**
+
+  Wanted to show the whole conservation to the reviewer
 ---
 
 ## Automated fixes (Auto-fix on pull requests)

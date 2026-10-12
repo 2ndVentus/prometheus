@@ -12,8 +12,12 @@ public sealed class RateLimitingOptions
 {
     public const string SectionName = "RateLimiting";
 
+    /// <summary>
+    /// Requests per client per window. The UI makes two calls per symbol (summary + details) that
+    /// share one cached upstream request, so 60/min ≈ 30 lookups/min.
+    /// </summary>
     [Range(1, 10_000)]
-    public int PermitLimit { get; set; } = 30;
+    public int PermitLimit { get; set; } = 60;
 
     [Range(typeof(TimeSpan), "00:00:01", "01:00:00")]
     public TimeSpan Window { get; set; } = TimeSpan.FromMinutes(1);

@@ -102,7 +102,11 @@ futures.
 
 ### 2.2 Domain model (Application)
 - **`StockSymbol` value object**: parsed once at the edge (trim, upper-case, **max 14 chars**,
-  `[A-Z0-9.\-^=]`) and passed as that type everywhere after; equality by normalised value.
+  `[A-Z0-9.\-^=]`, **at least one letter or digit**) and passed as that type everywhere after;
+  equality by normalised value. The letter-or-digit rule came from the final review: `..` was
+  accepted, and as a path segment it would make the upstream URL resolve to a different Yahoo path
+  (unreachable over HTTP because ASP.NET normalises dot segments, but the type shouldn't allow it);
+  punctuation-only input also cost a pointless upstream call.
 - **`IntradayBar` has non-nullable prices and volume.** Infrastructure drops incomplete bars before
   mapping, so "a bar is complete" is enforced by the type system.
 - **`DailySummaryAggregator` is a static pure function**: nothing to mock or swap, so no interface.
@@ -194,7 +198,9 @@ futures.
 
 ### 2.7 Hosting
 - **Rate limiting**: per-client fixed window on `/api/v1/stocks` only (`RateLimiting:PermitLimit`,
-  default 30/min; `/health` exempt), protecting the shared upstream quota.
+  default 60/min; `/health` exempt), protecting the shared upstream quota. **Changed after the
+  final review** from 30: the UI makes two calls per symbol (summary + details), so 30 allowed only
+  ~15 lookups; both calls share one cached upstream request, so Yahoo load is unchanged.
 - **Forwarded headers** trusted only from `ForwardedHeaders:KnownNetworks` (empty by default; the
   compose subnet in Docker), so rate limiting sees real clients behind nginx without letting
   clients spoof `X-Forwarded-For` (verified, §6.2).
@@ -214,7 +220,7 @@ futures.
 | `MarketData:Yahoo:{BaseUrl, UserAgent, Interval, Range}` | Yahoo query1, browser UA, `15m`, `1mo` |
 | `MarketData:Yahoo:{MaxRetryAttempts, AttemptTimeout, TotalRequestTimeout}` | 2, 4 s, 10 s |
 | `MarketData:Cache:Duration` | 5 min |
-| `RateLimiting:{PermitLimit, Window}` | 30, 1 min |
+| `RateLimiting:{PermitLimit, Window}` | 60, 1 min |
 | `Cors:AllowedOrigins` | none |
 | `ForwardedHeaders:KnownNetworks` | none (compose: `172.28.0.0/24`) |
 
@@ -331,7 +337,10 @@ ProblemDetails and `Retry-After` (seconds or date).
 ### 3.8 Input and accessibility
 - Input trimmed and upper-cased; the backend's symbol rule is mirrored for instant feedback (the
   backend stays the authority). Search on submit; example chips (TSLA, AAPL, ^GSPC, VOD.L, 7203.T);
-  submit disabled while loading.
+  the form **stays usable while loading** — a new search supersedes and cancels a slow one
+  (changed after the final review; disabling it left users stuck behind a slow upstream). The page
+  title follows the symbol (`TSLA · Intraday Daily Summary`), and re-searching the current symbol
+  doesn't add a history entry.
 - Labelled input with `aria-invalid`/`aria-describedby`; chips in a `<fieldset>`; loading in an
   `<output>`; errors in `role="alert"`; charts labelled with SVG `title`/`desc` inside a
   `<figure>` (not `role="img"`, which would hide Recharts' keyboard layer); the table is the full
@@ -509,7 +518,8 @@ a public repo, reproducible from a file.
 | #13 | Design decisions restructured and checked against the code (first docs-only PR under the CodeQL gate) |
 | #14 | Instrument metadata endpoint (backend) — shares the cached upstream call with the summary |
 | #15 | Instrument name, exchange, type and quote currency in the UI |
-| — | Documentation: README, `PROMPT_LOG.md` |
+| #16 | Documentation: README, `PROMPT_LOG.md` |
+| — | Final review fixes: symbol rule, rate limit, history, form while loading, favicon/title |
 
 ---
 

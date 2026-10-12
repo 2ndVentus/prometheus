@@ -82,6 +82,8 @@ public sealed class DailySummaryEndpointTests : IDisposable
     [InlineData("%3Cscript%3E")]
     [InlineData("TS%20LA")]
     [InlineData("A%3BB")]
+    [InlineData("...")]
+    [InlineData("%5E")]
     public async Task Get_InvalidSymbol_Returns400ValidationProblemWithoutCallingUpstream(string pathSegment)
     {
         var response = await _client.GetAsync($"/api/v1/stocks/{pathSegment}/daily-summary", Ct);
