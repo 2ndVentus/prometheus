@@ -1,0 +1,40 @@
+# One-command run: `docker compose up --build`, then open http://localhost:8080
+# Only Docker is required — no .NET SDK or Node on the host.
+
+name: stock-daily-summary
+
+services:
+  api:
+    build: ./backend
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # Trust X-Forwarded-For only from the compose network (where nginx lives), so rate limiting
+      # sees each browser's IP instead of one shared nginx IP.
+      ForwardedHeaders__KnownNetworks__0: 172.28.0.0/24
+    networks: [app]
+    # Not published to the host: the browser reaches it through nginx at /api.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - '8080:8080'
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [app]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    restart: unless-stopped
+
+networks:
+  app:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
