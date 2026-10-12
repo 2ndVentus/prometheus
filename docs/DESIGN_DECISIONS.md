@@ -1,570 +1,542 @@
 # Design Decisions
 
-Running log of design decisions and the reasoning behind them. Source material for the README's
-"Design & Trade-offs" section.
+The decisions behind this project, why they were made, and what was consciously left out. Each
+decision was agreed between the author and Claude during a step-by-step design review (API →
+backend → frontend → testing → hidden issues → setup/CI) and then refined while building.
+Where the build changed a planned decision, the entry says **Changed during build** and why.
+
+This file is the source for the README's "Design & trade-offs" section. `PROMPT_LOG.md` records
+the conversation itself.
+
+## At a glance
+
+| Area | Decision |
+|---|---|
+| Upstream | Yahoo chart API, `interval=15m&range=1mo`, browser User-Agent |
+| Day boundaries | Exchange-local calendar day (IANA zone, DST-aware) |
+| Contract | The brief's bare array; prices averaged in `decimal`, rounded once to 4 dp (away from zero) |
+| Data cleaning | Drop bars with any null price; drop Yahoo's trailing last-price snapshot only |
+| Backend | .NET 10, Api → Application ← Infrastructure, Minimal APIs, ProblemDetails |
+| Errors | Values for validation, provider-neutral exceptions for upstream failures, one handler |
+| Resilience | Standard resilience handler (≤ 2 retries), HybridCache (5 min), per-client rate limit |
+| Frontend | React 19 + Vite + TypeScript, TanStack Query, zod, Recharts, Tailwind v4 |
+| Charts | Price and volume as two charts on one time axis (no dual axis), plus a full table |
+| Tests | xUnit v3 (MTP) + Shouldly + NSubstitute; Vitest + Testing Library + MSW; real Yahoo fixtures |
+| Run | Native (SDK + Node) or `docker compose up --build` (Docker only) |
+| GitHub | Public repo, PR per milestone, ruleset as code, CodeQL, Dependabot, SHA-pinned actions |
 
 ---
 
 ## 1. Upstream API (Yahoo Finance chart API)
 
-Findings from probing `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}` across 13+
-symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto, FX, futures).
+Findings from probing `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}` across US,
+Toronto, London, Frankfurt, Tokyo, Hong Kong, India and Sydney equities, indices, crypto, FX and
+futures.
 
-### 1.1 Request `interval=15m&range=1mo`
-- The example curl in the brief (no `range`) returns **only the latest trading day**; it does not
+### 1.1 Request: `interval=15m&range=1mo`
+- The brief's example curl (no `range`) returns **only the latest trading day**, which doesn't
   satisfy "last month". `range=1mo` returns ~22 trading days.
-- `range=1mo` is preferred over computing `period1`/`period2` ourselves: it aligns with Yahoo's own
-  definition of a month and keeps clock logic (and `TimeProvider` plumbing) out of our code.
-- 15m data is only retained for **60 days** (`range=3mo` → HTTP 422). Any future configurable range
-  must be validated against an allow-list.
-- `includePrePost` is left at its default (`false`): extended-hours bars are mostly zero-volume and
-  would distort the averages.
-- A browser-like `User-Agent` header is **required**; without it Yahoo returns 429.
+- `range=1mo` rather than computing `period1`/`period2`: it uses Yahoo's own definition of a month
+  and keeps clock logic out of our code.
+- 15m data is kept for **60 days** only (`range=3mo` → HTTP 422), so interval and range are
+  validated against allow-lists in configuration.
+- `includePrePost` stays `false`: extended-hours bars are mostly zero-volume and would distort the
+  averages.
+- A browser-like `User-Agent` is **required**; without it Yahoo answers 429.
 
-### 1.2 Group by **exchange-local** calendar day
-- Days are derived by converting each bar's UTC timestamp into `meta.exchangeTimezoneName`
-  (IANA, DST-aware via `TimeZoneInfo`), falling back to `meta.gmtoffset`.
-- Grouping by UTC or server-local time happens to work for US equities but is wrong for
-  Asia/Pacific exchanges and 24/7 instruments (crypto, FX).
+### 1.2 Days are exchange-local
+- Each bar's UTC timestamp is converted to `meta.exchangeTimezoneName` (IANA, DST-aware via
+  `TimeZoneInfo`) and grouped by that calendar date. If the zone can't be resolved on the host, the
+  fixed `meta.gmtoffset` is used and a **warning is logged** (a fixed offset is wrong across a DST
+  change).
+- Grouping by UTC or server time happens to work for US stocks but is wrong for Asia/Pacific
+  exchanges and 24/7 instruments.
 
 ### 1.3 Aggregation semantics
-- `lowAverage` = arithmetic mean of the 15m bar **lows** for the day.
-- `highAverage` = arithmetic mean of the 15m bar **highs** for the day.
-- `volume` = **sum** of 15m bar volumes for the day.
-- Computed in `decimal` (not `double`) and rounded to **4 dp** with
-  `MidpointRounding.AwayFromZero` (financial convention; .NET's default is banker's rounding).
-- Days returned in ascending order; a day with no usable bars is omitted rather than emitted with
-  zero/NaN values.
-- The brief's sample date (`2009-01-30`) is illustrative of format only — 15m history doesn't go
-  back that far.
+- `lowAverage` = mean of the day's 15m bar **lows**; `highAverage` = mean of the **highs**;
+  `volume` = **sum** of volumes.
+- Computed in `decimal`, rounded **once, after averaging**, to **4 dp** with
+  `MidpointRounding.AwayFromZero` (financial convention; .NET defaults to banker's rounding).
+- Days in ascending order. A day with no usable bars is omitted, never emitted as zeros.
+- The brief's sample date (`2009-01-30`) only illustrates the format; 15m history doesn't go back
+  that far.
 
-### 1.4 Response is the **bare array** from the brief
-- The brief says "returns JSON in this format", so the endpoint returns exactly
-  `[{ day, lowAverage, highAverage, volume }]` — no envelope. Metadata (currency, name, timezone)
-  is deliberately not added to this endpoint; a separate endpoint can expose it later without
-  breaking the contract.
+### 1.4 The response is the brief's bare array
+- `[{ day, lowAverage, highAverage, volume }]`, no envelope. Metadata (currency, name, timezone)
+  is deliberately left out; a separate endpoint can add it without breaking this contract.
 
-### 1.5 Null bars are skipped
-- Yahoo emits bars with `null` OHLC. More common than first thought: building fixtures showed
-  **every Hong Kong and Tokyo session has lunch-break null bars** (4 and 3 per day), plus FX gaps
-  (`EURUSD=X`), halts and illiquid symbols. A bar with **any** null price is excluded so it can't
-  drag averages to zero (domain bars are complete by construction). Null volume is treated as 0.
-- **Filter order: trailing-snapshot first, then incomplete-bar.** The snapshot rule must judge the
-  series exactly as Yahoo sent it; if nulls were removed first, a genuine final bar could become
-  "last" and be judged as a snapshot.
+### 1.5 Incomplete bars are dropped
+- Yahoo sends bars with `null` prices: **every Hong Kong and Tokyo session has lunch-break null
+  bars** (found while building fixtures; the first probe had missed them), plus FX gaps, halts and
+  illiquid symbols. A bar with **any** null price is removed so it can't drag averages towards zero.
+  Null volume counts as 0.
 
-### 1.6 Trailing "snapshot" bar is removed — narrowly
-- Yahoo appends a final **last-price snapshot** to the series: `volume == 0` and
-  `open == high == low == close`. Observed on US, Toronto, London, Frankfurt, Tokyo, Sydney,
-  futures and crypto; **not** present on Hong Kong or India (their final bar is a real auction /
-  trading bar with volume). Its timestamp is not always on the 15m grid (e.g. BHP.AX 16:12,
-  GC=F 16:59).
-- Rule: **drop only the last element of the series, and only if it is zero-volume and flat.**
-- Rejected alternatives:
-  - *Drop all zero-volume bars* — would delete legitimate bars (Tokyo lunch break, HK, FX, index
-    bars).
-  - *Match on `meta.regularMarketTime`* — unreliable (off by 497–2301 s for VOD.L, SAP.DE, BHP.AX).
-- During market hours the last bar is the in-progress partial bar, which has volume, so it is
-  kept.
+### 1.6 Yahoo's trailing "snapshot" bar is dropped — narrowly
+- Yahoo appends a **last-price snapshot** to the end of the series: zero volume and
+  open = high = low = close. Seen on US, Toronto, London, Frankfurt, Tokyo, Sydney, futures and
+  crypto; **not** on Hong Kong or India, whose final bar is a real auction bar with volume. Its
+  timestamp isn't always on the 15m grid (BHP.AX 16:12, GC=F 16:59).
+- **Rule: drop only the last bar, and only if it is zero-volume and flat.**
+- Rejected: dropping every zero-volume bar (deletes real bars — Tokyo's 11:30 pre-lunch bar, FX,
+  indices); matching `meta.regularMarketTime` (off by 497–2301 s for VOD.L, SAP.DE, BHP.AX).
+- **Order: snapshot rule first, then incomplete bars.** The snapshot rule must see the series as
+  Yahoo sent it; removing nulls first could make a genuine bar "last".
+- During market hours the last bar is the in-progress bar, which has volume, so it's kept.
 
-### 1.7 Symbol handling
-- Symbols are trimmed/upper-cased (Yahoo normalises `tsla` → `TSLA` anyway) and URL-escaped
+### 1.7 Symbols
+- Trimmed and upper-cased (Yahoo normalises `tsla` → `TSLA` anyway) and URL-escaped
   (`^GSPC`, `EURUSD=X`).
-- Yahoo uses `-` for share classes (`BRK-B`, not `BRK.B`), which is worth surfacing in the UI hint.
+- Yahoo uses `-` for share classes (`BRK-B`, not `BRK.B`) and suffixes for other exchanges
+  (`VOD.L`); the UI hint and the 404 message say so.
 
 ---
 
-## 2. Backend (.NET 10, LTS)
+## 2. Backend (.NET 10 LTS)
 
 ### 2.1 Three projects: Api → Application ← Infrastructure
-- Compiler-enforced dependency direction: core logic knows nothing about Yahoo or HTTP. A second
-  provider or new endpoint can be added without touching the core (Open/Closed, Dependency
-  Inversion).
-- **No separate Domain project (yet).** The domain is currently three records and a pure
-  aggregation function; a dedicated project would be ceremony. It lives in a `Domain/` folder
-  inside Application and can be split out mechanically if it grows real behaviour (indicators,
-  portfolios, corporate-action adjustments). This is a reversible decision.
+- The compiler enforces the dependency direction: core logic knows nothing about Yahoo or HTTP. A
+  second provider or endpoint can be added without touching it.
+- **No separate Domain project (yet).** The domain is a few records and a pure function, so it
+  lives in `Application/Domain/`. Splitting it out later is mechanical.
 
-### 2.2 Yahoo data-cleaning filters live in **Infrastructure**, not the core
-- `NullBarFilter` and `TrailingSnapshotBarFilter` exist because of *Yahoo's* data quirks, not
-  because of a business rule. Another provider (Polygon, Alpha Vantage…) wouldn't need them.
-- Therefore `YahooMarketDataProvider` applies them and returns **clean bars**; the Application
-  layer never knows the upstream was messy. Each filter is still its own small class
-  (`IBarFilter`) with focused unit tests.
-- Consequence for the domain model: `IntradayBar` has **non-nullable** OHLC/volume. Incomplete
-  bars are dropped in Infrastructure before mapping, so "a bar is complete" is an invariant the
-  type system enforces rather than something the aggregator must re-check.
+### 2.2 Domain model (Application)
+- **`StockSymbol` value object**: parsed once at the edge (trim, upper-case, **max 14 chars**,
+  `[A-Z0-9.\-^=]`) and passed as that type everywhere after; equality by normalised value.
+- **`IntradayBar` has non-nullable prices and volume.** Infrastructure drops incomplete bars before
+  mapping, so "a bar is complete" is enforced by the type system.
+- **`DailySummaryAggregator` is a static pure function**: nothing to mock or swap, so no interface.
+  **`DailySummaryService`** (behind `IDailySummaryService`) orchestrates provider → aggregator and
+  is the seam the API depends on.
 
-### 2.2a `StockSymbol` value object (domain primitive)
-- Symbols are parsed once at the edge into a `StockSymbol` (trim, upper-case, max 14 chars,
-  `[A-Z0-9.\-^=]`) and passed as that type everywhere after — no raw strings reach the provider,
-  and validation lives in one place shared by the endpoint and any future callers. Avoids
-  primitive obsession; equality is by normalised value (`tsla` == `TSLA`).
-- `DailySummaryAggregator` is a **static pure function** (no I/O, no state): there is nothing to
-  mock or swap, so an interface would be ceremony. `DailySummaryService` (behind
-  `IDailySummaryService`) orchestrates provider → aggregator and is the seam the API depends on.
+### 2.3 Yahoo integration (Infrastructure)
+- **Data-cleaning filters live in Infrastructure**, not the core: `TrailingSnapshotBarFilter` and
+  `IncompleteBarFilter` (each an `IBarFilter`, registered in order) exist because of *Yahoo's*
+  quirks, not a business rule. The provider returns clean bars; Application never sees the mess.
+- **`YahooChartMapper`** validates the shape (missing meta/quote, mismatched array lengths →
+  "unavailable"), resolves the timezone (§1.2) and runs the filters.
+- **Wire DTOs** are separate from domain records and deserialized with a source-generated
+  `JsonSerializerContext`; everything nullable, so the mapper decides what's required.
+- **`YahooMarketDataProvider`**: typed `HttpClient`, symbol escaping, and every failure translated
+  into a provider-neutral exception (§2.4).
+- **Options** (`MarketData:Yahoo`), validated at startup: base URL, User-Agent, interval and range
+  (allow-lists), retries, timeouts.
+- **Resilience** via `Microsoft.Extensions.Http.Resilience` standard handler: **≤ 2 retries** with
+  jittered backoff (honours `Retry-After`), **4 s per attempt, 10 s total**, circuit breaker. The
+  backend owns the retry budget; the frontend doesn't stack its own on top (hidden issue #7).
+- `SocketsHttpHandler` with automatic decompression and a 5-minute pooled-connection lifetime
+  (picks up DNS changes).
 
-### 2.3 Error handling: hybrid (exceptions for upstream failures, values for validation)
-- **Input validation** (bad symbol format) is an expected user mistake → handled as a value at
-  the endpoint (`TypedResults.ValidationProblem`), no exception thrown.
-- **Upstream failures** are translated in Infrastructure into a small set of typed exceptions
-  and mapped to RFC 7807 ProblemDetails by a single `IExceptionHandler`. The exception types live in
-  **Application** (`Abstractions/MarketDataExceptions.cs`) and are provider-neutral —
-  `SymbolNotFoundException`, `MarketDataRateLimitedException` (with `RetryAfter`),
-  `MarketDataUnavailableException`, `MarketDataTimeoutException`, all deriving from
-  `MarketDataException` — so the API maps them without knowing Yahoo exists. (Renamed from the
-  planned `Upstream*` names during milestone 3 for that reason.)
-- Why not `Result<T>` throughout: C# has no `?` propagation operator, so every layer gains
-  unwrap/re-wrap boilerplate; and `HttpClient`/JSON/cancellation throw regardless, so a global
-  handler is needed anyway — you'd run both mechanisms. Exceptions + `IExceptionHandler` is the
-  idiomatic ASP.NET Core path.
-- Mitigation for "forgot to map a new exception → silent 500": a unit test enumerates every
-  exception type and asserts the handler maps it.
-- Revisit if the API grows richer validation or multiple failure types per call; switching the
-  service boundary to `Result<T>` is a contained change.
+### 2.4 Error handling: values for validation, exceptions for upstream failures
+- **Invalid input** is an expected mistake → returned as a value (`TypedResults.ValidationProblem`),
+  no exception.
+- **Upstream failures** become provider-neutral exceptions defined in Application
+  (`SymbolNotFoundException`, `MarketDataRateLimitedException` with `RetryAfter`,
+  `MarketDataUnavailableException`, `MarketDataTimeoutException`, all `MarketDataException`), mapped
+  to RFC 7807 ProblemDetails by **one `IExceptionHandler`**. **Changed during build:** named
+  `MarketData*` rather than the planned `Upstream*`, so the API needn't know which provider failed.
+- **Why not `Result<T>`:** C# has no `?` propagation, so every layer gains unwrap/re-wrap
+  boilerplate, and `HttpClient`/JSON/cancellation throw anyway, so a global handler is needed
+  regardless. A unit test enumerates every `MarketDataException` type and asserts it has an HTTP
+  mapping, closing the "forgot to map it → silent 500" gap. Switching the service boundary to
+  `Result<T>` later is a contained change.
 
-| Upstream condition | Our response |
+| Condition | Response |
 |---|---|
-| Invalid symbol format | 400 ValidationProblem |
-| Yahoo 404 / `chart.error` "Not Found" | 404 |
-| Yahoo 429 | **503** + `Retry-After` (our dependency is throttled, not the caller) |
-| Yahoo 5xx / bad payload / contract change | 502 |
+| Invalid symbol format | 400 ValidationProblem (`errors.symbol`, allowed characters, examples) |
+| Yahoo 404 / "Not Found" | 404, with the symbol and a `BRK-B` hint |
+| Yahoo 429 | **503** + `Retry-After` when Yahoo gave one (our dependency is throttled, not the caller) |
+| Yahoo 5xx / 422 / bad JSON / shape change / network / open circuit | 502 |
 | Timeout | 504 |
+| Our own rate limit exceeded | 429 + `Retry-After` |
+| Anything unexpected | 500 ProblemDetails, no details |
+| Client disconnected mid-request | 499, logged at debug (not an error) |
 | Valid symbol, no bars | 200 `[]` |
 
-### 2.4 Endpoint: `GET /api/v1/stocks/{symbol}/daily-summary`
-- Minimal APIs with `MapGroup` + `TypedResults` (modern default, less ceremony than controllers,
-  typed results flow into OpenAPI). Versioned path prefix for forward compatibility.
-- The route takes a raw `string` and parses it with `StockSymbol.TryParse` inside the handler, so an
-  invalid symbol returns a **descriptive 400 ValidationProblem** (`errors.symbol`, allowed
-  characters, examples). Binding `StockSymbol` directly via a static `TryParse` would also work but
-  yields a generic 400 with no explanation.
-- Response contract is `DailySummaryResponse` (separate from the domain record), serialized with a
-  source-generated `ApiJsonContext`. Prices use `CanonicalDecimalJsonConverter` (see hidden issue
-  #1): `382.7`, not `382.7000`. Precision is decided by the domain; the converter only normalises
-  representation.
-- Upstream 5xx-class problems return **generic details**; the exception (which may contain provider
-  internals) is logged, never returned. 404s include the symbol and a `BRK-B` hint. Every problem
-  carries `instance` and `traceId` for correlating with logs.
+- 5xx-class problems carry **generic details**; the exception (which may contain provider
+  internals) is logged, never returned. Every problem has `instance` and `traceId`.
 
-### 2.5 Caching via `HybridCache` decorator on the provider
-- `CachedMarketDataProvider` decorates `YahooMarketDataProvider`; 5-min TTL (configurable via
-  `MarketData:Cache:Duration`). "Not found" is cached with the **same** TTL (changed from the
-  planned 1-min negative TTL: HybridCache sets expiry per call, not per result, so a separate TTL
-  needs a second cache key and lookup; symbols don't spring into existence within 5 minutes, so
-  the simpler single TTL was chosen). Rate-limit/timeout/unavailable failures are never cached.
-- The cache entry stores the timezone as its **system id** (or a fixed UTC offset for the fallback
-  zone). `TimeZoneInfo.ToSerializedString`/`FromSerializedString` was tried first and **fails for
-  ICU-backed IANA zones on Linux/macOS** (e.g. `Europe/London`: "AdjustmentRule array must be in
-  chronological order") — caught by a cache round-trip test.
-- Stampede protection matters because Yahoo rate-limits per IP. In-memory today; swappable to
-  Redis via configuration.
+### 2.5 HTTP API
+- **`GET /api/v1/stocks/{symbol}/daily-summary`** with Minimal APIs (`MapGroup` + `TypedResults`,
+  which flow into OpenAPI). Versioned prefix for forward compatibility.
+- The route takes a raw `string` and parses `StockSymbol` in the handler, so an invalid symbol gets
+  a **descriptive** 400 (binding the value object directly would give a generic one).
+- **`DailySummaryResponse`** is separate from the domain record; serialized with a source-generated
+  `ApiJsonContext`. **`CanonicalDecimalJsonConverter`** writes the shortest form (`382.7`, not
+  `382.7000`) because `decimal` carries its scale into JSON (hidden issue #1).
+
+### 2.6 Caching
+- **`CachedMarketDataProvider`** decorates the Yahoo provider using **HybridCache**: 5-minute TTL
+  (`MarketData:Cache:Duration`) and **stampede protection** — concurrent requests for a symbol make
+  one upstream call, which matters because Yahoo rate-limits per IP.
 - Caches the **raw series**, not summaries, so future endpoints can reuse it.
+- "Not found" is cached with the same TTL. **Changed during build** from a planned 1-minute
+  negative TTL: HybridCache sets expiry per call, not per result, so a separate TTL needs a second
+  key and lookup. Rate-limit, timeout and availability failures are never cached.
+- The cache entry stores the timezone as its **system id** (or a fixed UTC offset for the fallback
+  zone). `TimeZoneInfo.FromSerializedString` was tried first and **fails for ICU-backed zones on
+  Linux/macOS** (e.g. `Europe/London`) — caught by a round-trip test. The entry is `sealed` +
+  `[ImmutableObject(true)]` so HybridCache reuses the instance in memory, yet stays serializable.
+- In-memory today; a distributed cache (Redis) is one service registration away.
 
-### 2.6 Resilience via `Microsoft.Extensions.Http.Resilience`
-- Standard handler: retry with jittered backoff on 429/5xx (not 404), per-attempt + total
-  timeout, circuit breaker.
-
-### 2.7 Other host concerns
-- Our own per-IP fixed-window rate limiter on `/api/v1/stocks` only (`RateLimiting:PermitLimit`,
-  default 30/min; `/health` exempt). Rejections are 429 ProblemDetails with `Retry-After`.
-- **Forwarded headers** trusted only from `ForwardedHeaders:KnownNetworks` (empty by default), so
-  rate limiting and logs see the real client IP behind nginx without letting arbitrary clients spoof
-  `X-Forwarded-For`. Docker Compose sets the network (milestone 6).
-- **No HTTPS redirection / HSTS in the app** (changed from the plan in hidden issue #5): TLS is
-  terminated at the reverse proxy, where HSTS belongs. In-app redirection behind an HTTP-only proxy
-  just logs "failed to determine the https port" and can cause redirect loops.
+### 2.7 Hosting
+- **Rate limiting**: per-client fixed window on `/api/v1/stocks` only (`RateLimiting:PermitLimit`,
+  default 30/min; `/health` exempt), protecting the shared upstream quota.
+- **Forwarded headers** trusted only from `ForwardedHeaders:KnownNetworks` (empty by default; the
+  compose subnet in Docker), so rate limiting sees real clients behind nginx without letting
+  clients spoof `X-Forwarded-For` (verified, §6.2).
+- **CORS**: allow-list from `Cors:AllowedOrigins` (empty by default — local dev and Docker are
+  same-origin via proxies), GET only, exposes `Retry-After`. Verified by tests that CORS headers
+  survive on error responses.
+- **No HTTPS redirection or HSTS in the app.** **Changed during build:** TLS terminates at the
+  reverse proxy, where HSTS belongs; redirecting behind an HTTP-only proxy only logs warnings and
+  risks redirect loops.
 - Middleware order: forwarded headers → exception handler → status code pages → CORS → rate
-  limiter → endpoints. Verified by tests that CORS headers (and exposed `Retry-After`) survive on
-  error responses.
-- `/health` endpoint; built-in OpenAPI with Scalar UI in Development.
-- Config via Options pattern with `ValidateOnStart` (base URL, User-Agent, interval, range, TTLs).
-- CORS default policy from `Cors:AllowedOrigins` (empty by default — local dev and Docker are
-  same-origin via proxies), GET only, exposes `Retry-After`.
-- `CancellationToken` flows end-to-end so abandoned requests cancel the upstream call.
-- Source-generated `JsonSerializerContext` for Yahoo DTOs; wire DTOs kept separate from domain
-  records.
-- Nullable enabled, warnings-as-errors, analyzers, central package management, sealed-by-default,
-  records for data.
+  limiter → endpoints.
+- `/health`; OpenAPI + Scalar UI **in Development only**; HTTP launch profile on **:5080**.
+- `CancellationToken` flows end-to-end, so an abandoned request cancels the upstream call.
+
+| Configuration | Default |
+|---|---|
+| `MarketData:Yahoo:{BaseUrl, UserAgent, Interval, Range}` | Yahoo query1, browser UA, `15m`, `1mo` |
+| `MarketData:Yahoo:{MaxRetryAttempts, AttemptTimeout, TotalRequestTimeout}` | 2, 4 s, 10 s |
+| `MarketData:Cache:Duration` | 5 min |
+| `RateLimiting:{PermitLimit, Window}` | 30, 1 min |
+| `Cors:AllowedOrigins` | none |
+| `ForwardedHeaders:KnownNetworks` | none (compose: `172.28.0.0/24`) |
+
+### 2.8 Code conventions
+- Nullable enabled, warnings as errors, latest recommended analyzers, code style enforced in build
+  (`.editorconfig`), central package management, NuGet lock files with `--locked-mode` restores.
+- `sealed` by default, records for data, primary constructors, source-generated logging.
 
 ---
 
 ## 3. Frontend (React 19 + TypeScript + Vite)
 
 ### 3.1 Tooling
-- **Vite + React 19 + TypeScript (strict)**. CRA is deprecated; Next.js adds SSR/server we don't need.
-- **Node 24 LTS**, pinned via `.nvmrc` and `engines`. npm.
-- **oxlint + Prettier** (changed from the planned ESLint during scaffolding): the current Vite
-  template ships oxlint by default; it is one dependency instead of ~6, 50–100x faster, and covers
-  what we need (react hooks, typescript, jsx-a11y, vitest, import-cycle rules). Run with
-  `--deny-warnings`. Prettier with `prettier-plugin-tailwindcss` for class ordering.
-- Vite 8, TypeScript 6 (`strict`, `noUncheckedIndexedAccess`).
+- **Vite 8 + React 19 + TypeScript 6** (`strict`, `noUncheckedIndexedAccess`). CRA is deprecated;
+  Next.js would add a server we don't need.
+- **Node 24 LTS**, pinned via `.nvmrc` and `engines`; npm. npm 11's install-script gate is set
+  explicitly: `fsevents` and `msw` post-install scripts are denied (neither is needed).
+- **oxlint + Prettier.** **Changed during build** from ESLint: the current Vite template ships
+  oxlint; it's one dependency instead of ~6, much faster, and covers React hooks, TypeScript,
+  jsx-a11y, Vitest and import-cycle rules. Run with `--deny-warnings`. Prettier sorts Tailwind classes.
+- **Tailwind CSS v4** (author's preference over CSS Modules): tokens are `@theme` variables, with
+  separately chosen dark values under `prefers-color-scheme`. No component library.
 
-### 3.2 Feature-based structure
-- `src/api/` (fetch wrapper, zod schemas) → `src/features/daily-summary/` (api, hook, components)
-  → `src/components/` (generic UI) → `src/lib/` (formatting).
-- Components never call `fetch` directly — mirrors the backend layering. New features become new
-  folders next to `daily-summary`.
+### 3.2 Structure
+- `src/api/` (HTTP client, `ApiError`) → `src/features/daily-summary/` (schema, symbol rules,
+  hooks, components) → `src/components/` (generic UI) → `src/lib/` (formatting). Components never
+  call `fetch` directly; new features become new folders.
 
-### 3.3 Data fetching: TanStack Query
-- Built-in loading/error/cache states, request cancellation via `signal` when the symbol changes,
-  no hand-rolled `useEffect` race conditions.
-- Retry **once, only on 502/504** (never 4xx, and not 503 — the backend owns the retry budget and
-  has already retried before returning 503; see hidden issue #7). `staleTime` 5 min to match the
-  backend cache; `placeholderData` keeps the previous result on screen, dimmed and `aria-busy`,
-  while a new symbol loads (no spinner flash).
+### 3.3 Data
+- **TanStack Query**: loading/error/cache states without hand-rolled `useEffect` races; 5-minute
+  `staleTime` to match the backend cache; no refetch on window focus; the previous result stays on
+  screen, dimmed and `aria-busy`, while a new symbol loads.
+- **Retry once, only on 502/504 answered by our API** — never 4xx, never 503 (the backend already
+  retried), never a proxy's gateway error (below).
+- **zod** validates every response, so contract drift fails loudly instead of rendering `NaN`;
+  `z.infer` is the single source of the `DailySummary` type. OpenAPI client generation is deferred.
+- **State in the URL** (`?symbol=TSLA`): shareable, bookmarkable, back/forward and refresh work.
+  A small `useSyncExternalStore` hook over `popstate`; no router. Invalid `?symbol=` values are
+  ignored. The form is keyed by symbol so back/forward resets the input.
+- **API base URL**: same-origin `/api` by default — the Vite dev/preview proxy locally, nginx in
+  Docker. `VITE_API_BASE_URL` (plus the backend CORS allow-list) only if the API is hosted elsewhere.
 
-### 3.4 Runtime response validation: zod
-- TS types vanish at runtime; zod makes contract drift fail loudly instead of rendering `NaN`.
-  `z.infer<>` is the single source of the `DailySummary` type.
+### 3.4 Errors
+Every failure becomes a typed `ApiError` (`http` / `network` / `invalid-response`) with
+ProblemDetails and `Retry-After` (seconds or date).
 
-### 3.5 Typed `ApiError` from ProblemDetails → friendly messages
-| Status | Message |
+| Situation | Message |
 |---|---|
-| 400 | "Invalid symbol" — no retry |
-| 404 | "No data for XYZ" + `BRK-B` / `VOD.L` hints — no retry |
-| 429 / 503 | "Slow down" / "provider is busy" + **"Try again in N seconds"** from `Retry-After` |
+| 400 | "Invalid symbol" — no retry button |
+| 404 | "No data for XYZ" with `BRK-B` / `VOD.L` hints — no retry button |
+| 429 / 503 | "Slow down" / "provider is busy" + **"Try again in N seconds"** when known |
 | 504 / other 5xx | Generic timeout / unavailable text (server detail never shown) + Try again |
-| network / unparseable or off-contract body | "Can't reach the server" / "Unexpected response" + Try again |
-| 502/503/504 **without** ProblemDetails | "Can't reach the server", no automatic retry — see below |
+| Network failure, or a 502/503/504 **without ProblemDetails** | "Can't reach the server" + Try again |
+| Unreadable or off-contract body | "Unexpected response" + Try again |
 
-- **A gateway status without ProblemDetails means our own API is down**, not the market data
-  provider. Our API answers every error with ProblemDetails, so a bare 502/503/504 came from a proxy
-  in front of it (Vite dev proxy, nginx). Found by stopping the backend during manual testing: the
-  UI said "Market data unavailable" and retried, which was both wrong and pointless. These are now
-  `kind: 'network'` and aren't retried.
+- **A gateway status without ProblemDetails means our own API is down.** Our API answers every
+  error with ProblemDetails, so a bare 502/503/504 came from a proxy in front of it. **Changed
+  during build:** found by stopping the backend while testing — the UI said "Market data
+  unavailable" and retried, which was wrong and pointless.
 
-### 3.6 URL state (`?symbol=TSLA`)
-- Shareable, bookmarkable, back-button and refresh friendly. A small `URLSearchParams` hook — no
-  router needed for a single view.
+### 3.5 Visualization
+- **Chart and table.** **Changed during build:** the planned single chart with volume on a second
+  y-axis became **two charts on one shared time axis** — dual axes invite false correlations. Price
+  chart: high and low average lines (2 px) with the daily range as a 10% wash; volume chart below
+  (columns ≤ 24 px, rounded tops). Crosshairs are synced and **one tooltip lists every value** for
+  the hovered day.
+- **Recharts 3** (declarative, typed, testable). Rejected: TradingView `lightweight-charts` (built
+  for OHLC candles we don't have; imperative canvas), Chart.js (imperative, weaker React fit).
+- **Palette validated, not eyeballed**: blue/orange/aqua checked with a palette validator in both
+  modes, every pair (colour-vision-deficiency ΔE ≥ 9.2 light / 9.4 dark). Light-mode aqua is below
+  3:1 contrast, which is acceptable because the table carries every value. Chart colours are
+  concrete values in `chartTheme.ts` (SVG attributes don't reliably resolve CSS variables).
+- **Axes**: the price axis hugs the data (never from 0) on **round ticks** (`niceTicks`: steps of
+  1/2/2.5/5 × 10ⁿ), every tick with the same decimals (`9.990 / 9.995 / 10.000`). Found by looking
+  at real output: Recharts produced `376.6388`, and PAXGU (~$10) produced `9.99 / 10`.
+- **Lazy-loaded chart**: Recharts is most of the bundle; initial JS went from 212 kB to 105 kB
+  gzipped. A same-size placeholder avoids layout shift, and an **error boundary** (keyed by symbol)
+  turns a chart crash or a failed chunk download into "chart unavailable — see the table".
+- **Table**: semantic `<table>`, newest first, tabular numerals; short dates and compact volume on
+  phones so all columns fit, while screen readers always get full values.
+- **Stat tiles**: trading days, lowest low average, highest high average, average daily volume.
+  Prices ≥ 1,000 show 2 dp in tiles (exact value on hover and in the table). Tiles size their value
+  with a **container query** and sit two per row until wide screens. **Changed during build:** the
+  author spotted BTC-USD prices overflowing the tiles.
+- **Short history note**: fewer than 15 trading days shows "Only N trading days of data…", so the
+  "last month" heading doesn't mislead for new listings (PAXGU had 4) or suspended symbols.
 
-### 3.7 Visualization: chart **and** table
-- **Two charts on one shared time axis, not a dual-axis chart** (changed during build: the dataviz
-  guidance lists dual axes as the #1 chart mistake — two y-scales on one plot invite false
-  correlations). Price chart: `highAverage` and `lowAverage` lines (2px) with the daily range as a
-  10% wash; volume chart below (columns ≤24px, 4px rounded tops). `syncId` links the crosshair, and
-  **one tooltip lists every value** for the hovered day.
-- **Palette validated, not eyeballed**: categorical slots blue/orange/aqua checked with the palette
-  validator in both modes, all pairs (worst CVD ΔE 9.2 light / 9.4 dark; normal-vision ≥ 20.9).
-  Light-mode aqua is < 3:1 against the surface, which is permitted because the table carries every
-  value. Colours live in `chartTheme.ts` as concrete values: SVG presentation attributes don't
-  reliably resolve CSS custom properties.
-- **Round axis ticks** (`niceTicks`: steps of 1/2/2.5/5 × 10ⁿ) — Recharts spaces ticks evenly between
-  the domain ends, which produced labels like `376.6388`. The price axis hugs the data (never from 0).
-  Every tick on an axis uses the same number of decimals (`9.990 / 9.995 / 10.000`, not
-  `9.99 / 9.995 / 10`) — found testing PAXGU, a ~$10 SPAC unit.
-- **Short history note**: fewer than 15 trading days (a month is ~20–23, Tokyo had 19 with
-  holidays) shows "Only N trading days of data…" so the "last month" heading doesn't mislead for
-  new listings (PAXGU had 4) or suspended symbols. The API has no listing date, so the note doesn't
-  claim which reason applies.
-- Accessibility: `<figure>`/`<figcaption>` + Recharts `title`/`desc` on each SVG (not `role="img"`,
-  which would hide Recharts' keyboard navigation layer); legend with line keys; table is the full
-  text equivalent.
-- **Lazy-loaded** (`React.lazy`): Recharts is most of the bundle — initial JS went from 212 kB to
-  105 kB gzipped; the chart chunk (111 kB) loads on demand behind a same-size placeholder.
-- **Error boundary** around the chart (keyed by symbol): a chart render error or a failed lazy-chunk
-  download after a deploy degrades to "chart unavailable — see table" instead of unmounting the app.
-  - Rejected: TradingView `lightweight-charts` (built for OHLC candles we don't have; imperative
-    canvas API), Chart.js (imperative, weaker React integration).
-- Semantic `<table>` (newest first, right-aligned tabular numerals) — doubles as the chart's
-  accessible equivalent. On phones it shows short dates and compact volume so all four columns fit;
-  screen readers always get the full date and number.
-- Summary stat tiles: trading days (range), lowest low average, highest high average, average daily
-  volume. Headline prices ≥ 1,000 show **2 dp** (4 dp is noise on `86,099.2480` and overflowed the
-  tile for BTC-USD); the exact value is on hover and in the table/tooltip. Tiles size their value
-  with a **container query** (font steps with the tile's own width) and sit two per row until `lg`,
-  so long figures shrink instead of overflowing — verified at 375/640/1024/1440px.
+### 3.6 Formatting
+- Prices at a **fixed 4 dp** in table and tooltip (the API's precision; aligned columns).
+- **No currency symbol**: the contract has no currency and some instruments aren't USD (VOD.L is in
+  pence).
+- `day` is a calendar date, not an instant: it is never passed to `new Date("yyyy-MM-dd")` (UTC
+  midnight → the previous day west of UTC); formatting builds it in UTC.
 
-### 3.8 Formatting
-- `Intl.NumberFormat`: prices at a **fixed 4 dp** in the table/tooltip/stats (the API's precision;
-  fixed so numbers align and compare at a glance); compact volume on axes ("49.1M"); full volume
-  in the table on wider screens.
-- **No currency symbol** — the bare-array contract carries no currency and some symbols are not
-  USD (VOD.L is in GBp/pence). Showing `$` would be wrong.
-- `day` is treated as a **string label**, never `new Date("yyyy-MM-dd")` (parses as UTC midnight →
-  renders as the previous day for users west of UTC).
-
-### 3.9 Styling: Tailwind CSS (v4, `@tailwindcss/vite`)
-- Chosen over CSS Modules for development speed and colocated styling; design tokens via
-  Tailwind `@theme` variables (values from the dataviz reference chrome); dark mode redefines the
-  same variables under `prefers-color-scheme: dark` — separately chosen dark steps, not an inversion.
-- No component library (MUI etc.) — unnecessary bundle weight for a single view.
-
-### 3.10 Input UX & accessibility
-- Trim + upper-case; client-side regex mirrors the backend (UX only — backend remains the
-  authority). Submit-based search, example chips (TSLA, AAPL, ^GSPC, VOD.L), disabled submit while
-  in flight; new search cancels the old one.
-- Labelled input with `aria-invalid`/`aria-describedby`, example chips in a `<fieldset>`, loading in
-  an `<output>` (implicit `role="status"`), errors in `role="alert"`, keyboard-operable, contrast
-  checked in both themes. (oxlint's jsx-a11y rules caught several `role=` attributes that had native
-  element equivalents.)
-- State in the URL (`useSyncExternalStore` over `popstate`); the form is keyed by symbol so
-  back/forward resets the input. Invalid `?symbol=` values are ignored.
-
-### 3.11 API base URL
-- Dev: Vite proxy `/api` → backend (no CORS, zero env config to run).
-- Prod: `VITE_API_BASE_URL` + backend CORS policy.
+### 3.7 Input and accessibility
+- Input trimmed and upper-cased; the backend's symbol rule is mirrored for instant feedback (the
+  backend stays the authority). Search on submit; example chips (TSLA, AAPL, ^GSPC, VOD.L, 7203.T);
+  submit disabled while loading.
+- Labelled input with `aria-invalid`/`aria-describedby`; chips in a `<fieldset>`; loading in an
+  `<output>`; errors in `role="alert"`; charts labelled with SVG `title`/`desc` inside a
+  `<figure>` (not `role="img"`, which would hide Recharts' keyboard layer); the table is the full
+  text equivalent. oxlint's jsx-a11y rules caught several `role=` attributes with native equivalents.
 
 ---
 
 ## 4. Testing
 
 ### 4.1 Principles
-- Test pyramid weighted to pure logic (aggregation, filters, parsing, formatting).
-- **No real network in CI**: Yahoo is replaced by **trimmed real payloads** captured during the
-  API investigation (TSLA, 0700.HK, EURUSD=X, BHP.AX, 7203.T, not-found, rate-limited), so tests
-  exercise genuine upstream quirks. A `BarBuilder` covers synthetic edge cases.
-- Behaviour over implementation; `Method_Scenario_Expected` naming; Arrange/Act/Assert.
+- Weighted to pure logic (aggregation, filters, parsing, formatting); behaviour over
+  implementation; `Method_Scenario_Expected` naming.
+- **No real network in CI.** Yahoo is replaced by **trimmed real payloads** captured during the
+  API investigation (TSLA, 0700.HK, EURUSD=X, BHP.AX, 7203.T, not-found, rate-limited), so tests see
+  genuine upstream quirks. Small builders (`Bars`, `RawBars`) cover synthetic edge cases.
+- **Expected values for fixtures were computed independently** (Python, exact decimals) rather than
+  by running the C# code and pasting its output.
+- **Timezones**: backend tests run under `TZ=Asia/Tokyo` in CI; frontend tests under
+  `America/Los_Angeles` (set in a Vitest `globalSetup`, with a sanity test). A `new Date("yyyy-MM-dd")`
+  regression or server-timezone dependence fails tests.
 
-### 4.2 Backend: xUnit v3 + Shouldly + NSubstitute + hand-written `StubHttpMessageHandler`
-- **Microsoft.Testing.Platform (MTP)**, not VSTest (discovered during scaffolding): xUnit v3 runs
-  on MTP, and the .NET 10 SDK no longer supports VSTest-mode `dotnet test` for MTP projects.
-  `global.json` opts into the MTP runner; coverage comes from
-  `Microsoft.Testing.Extensions.CodeCoverage` (coverlet's VSTest collector doesn't apply);
-  `Microsoft.NET.Test.Sdk` and `xunit.runner.visualstudio` are not needed. The Live filter is
-  `--filter-not-trait "Category=Live"`.
-- MTP fails a run where **zero tests executed** (exit code 8). Kept as a guard against filters that
-  silently exclude everything — so test projects are added in the milestone that adds their first
-  tests, rather than scaffolded empty.
-- **Shouldly, not FluentAssertions**: FluentAssertions v8+ requires a paid commercial licence.
-- **NSubstitute, not Moq**: avoids the SponsorLink controversy; only needed at the provider seam.
-- No HTTP mocking library — a small stub handler returning fixtures/status/headers is enough.
-- `WebApplicationFactory<Program>` integration tests run the real pipeline and assert the
-  **raw JSON string** (the contract), ProblemDetails per status, `Retry-After` on 503, CORS
-  headers on error responses, and `/health`.
-- **Exhaustiveness test**: every custom exception type is mapped by the `IExceptionHandler`.
-- Key unit cases: exchange-local grouping (Tokyo/Sydney across UTC midnight, US DST day),
-  `AwayFromZero` rounding, snapshot-filter keep/drop cases (incl. HK final bar and Tokyo lunch
-  bar), null bars, mismatched arrays, timezone fallback, request URL/User-Agent/escaping, cache
-  hit / stampede / negative caching.
-- **Live Yahoo contract tests** (`Live/YahooLiveContractTests.cs`) are xUnit v3 **explicit** tests
-  (`[Fact(Explicit = true)]`) tagged `Category=Live`: they never run in a normal `dotnet test`
-  (local or PR CI) and run with `-- --explicit only` nightly and on demand, as an early warning for
-  upstream shape changes. They exercise the full production pipeline (DI, resilience, cache,
-  mapping).
-- **Fixture expected values are computed independently** (Python with exact decimal arithmetic over
-  the same JSON files) rather than by running the C# code and pasting its output — so a bug in the
-  C# aggregation can't silently become the expected value.
-- Coverage via MTP CodeCoverage + ReportGenerator — **reported, not gated** (thresholds encourage
-  coverage-chasing tests).
-  - Each test project writes to its **own** `TestResults/` (set via
-    `TestingPlatformCommandLineArguments` in `tests/Directory.Build.props`). With a shared results
-    directory, a second test project silently **overwrote** the first's `coverage.cobertura.xml`
-    (found when Application.Tests was added).
-  - `backend/coverage.settings.xml` excludes compiler/source-generated code (OpenAPI and Regex
-    source generators, `[CompilerGenerated]`) so the number reflects hand-written code only
-    (the overall figure went from 26% to 95.6% line / 100% branch once generated code was
-    excluded).
+### 4.2 Backend
+- **xUnit v3 on Microsoft.Testing.Platform**, **Shouldly**, **NSubstitute**, hand-written HTTP stubs.
+  - Shouldly, not FluentAssertions: FluentAssertions v8+ needs a paid commercial licence.
+  - NSubstitute, not Moq: avoids the SponsorLink controversy.
+  - **Changed during build:** VSTest was replaced by MTP — the .NET 10 SDK no longer runs xUnit v3
+    in VSTest mode. `global.json` opts in; coverage comes from
+    `Microsoft.Testing.Extensions.CodeCoverage`. MTP fails a run where zero tests executed, which is
+    kept as a guard against filters that silently exclude everything.
+- **Integration tests** (`WebApplicationFactory`) assert the **raw JSON string**, ProblemDetails per
+  status, `Retry-After`, CORS on error responses, rate limiting, OpenAPI in Development only, no
+  leakage from 500s in Production, and end-to-end runs on a captured Yahoo response.
+- **Live contract tests** call real Yahoo through the production pipeline. They are xUnit
+  **explicit** tests tagged `Category=Live`: never part of a normal or PR run; run with
+  `-- --explicit only` by the scheduled workflow (§6.5) and on demand.
+- **Coverage is reported, not gated.** Each test project writes its own `TestResults/` (a shared
+  folder made a second project overwrite the first's coverage file — found when adding it), and
+  `coverage.settings.xml` excludes generated code.
 
-### 4.3 Frontend: Vitest + React Testing Library + user-event + MSW
-- MSW intercepts at `fetch`, so tests exercise the real httpClient → zod → TanStack Query →
-  component chain.
-- Cases: formatters, zod schema accept/reject, ProblemDetails → `ApiError`, no retry on 400/404,
-  cancellation on symbol change, form normalisation/validation/disabled state, one error-message
-  test per status, Retry button, table order and verbatim `day`, URL sync, chart renders with
-  `aria-label` (no SVG snapshots).
-- Vitest `globalSetup` sets **`TZ=America/Los_Angeles`** (cross-platform, unlike an inline env var
-  in an npm script), and a sanity test asserts it. Any `new Date("yyyy-MM-dd")` regression then
-  fails (the date shifts back a day). Backend tests likewise run under a non-UTC process timezone.
+### 4.3 Frontend
+- **Vitest + Testing Library + user-event + MSW.** MSW intercepts at the `fetch` level, so tests
+  exercise the real client → zod → TanStack Query → component chain.
+- Covered: formatters, schema accept/reject, every `ApiError` kind including proxy gateway errors
+  and abort propagation, retry policy, form validation, every UI state (idle, loading, data, empty,
+  each error, retry recovery), URL load and back navigation, stat tiles, chart rendering (titles,
+  legend, one column per day — no SVG snapshots), error boundary.
 
 ---
 
-## 5. Hidden issues & mitigations
+## 5. Hidden issues and mitigations
+
+Identified during design; ✅ = verified by a test or by hand.
 
 | # | Issue | Mitigation |
 |---|---|---|
-| 1 | **Decimal keeps its scale in JSON** (verified: `382.70001220703125m` → `382.7000`; Yahoo `2910.0` → `2910.0`) — inconsistent output | `CanonicalDecimalJsonConverter` writes canonical shortest form; rounding stays in the domain; raw-JSON integration tests ✅ |
-| 2 | **`HybridCache` serializes values even in L1** unless `sealed` + `[ImmutableObject(true)]`; `TimeZoneInfo` isn't serializable | Cache a serializable DTO with the timezone **id string**; mark immutable; resolve `TimeZoneInfo` after retrieval |
-| 3 | **CORS headers missing on error responses** → browser shows opaque network error instead of 404 message; `Retry-After` unreadable cross-origin | CORS applies headers in `OnStarting`, so they survive the exception handler clearing the response; `WithExposedHeaders("Retry-After")`; integration tests ✅ |
-| 4 | **macOS AirPlay occupies port 5000** | API on **5080**, Vite on 5173 |
-| 5 | **HTTPS dev-cert friction** for reviewers | HTTP launch profile locally; TLS/HSTS at the reverse proxy, not in the app (see §2.7) |
-| 6 | **Vite proxy absent in `vite preview`** | Configure `preview.proxy`; `VITE_API_BASE_URL` for deployments |
-| 7 | **Retry amplification** (frontend × backend retries; retrying 429 worsens throttling) | Backend owns the retry budget (≤2, honours `Retry-After`, circuit breaker); frontend retries once on 502/504 only |
-| 8 | **Per-IP rate limit behind a proxy** collapses all users into one bucket | `UseForwardedHeaders` trusting only the compose subnet; verified per-client buckets and spoof resistance behind nginx ✅ |
-| 9 | **Missing tzdata/ICU in slim containers** → silent fallback to fixed offset (wrong across DST) | Full `aspnet` image (Ubuntu 24.04, tzdata + ICU); warning logged on fallback; verified none in Docker ✅ |
-| 10 | **Today's row is partial** during market hours | UI footnote; round once after averaging |
-| 11 | **Fewer days/bars than expected** (holidays, half-days, new listings) | No code assumes fixed counts; tests for short/empty series |
-| 12 | **Special characters in symbols** (`^`, `=`, `-`) | `encodeURIComponent` / `Uri.EscapeDataString`; route accepts them; tested both sides |
-| 13 | **Client aborts logged as 500s** | `MarketDataExceptionHandler` treats request-aborted cancellation as non-error (499, debug log) ✅ |
-| 14 | **Chart y-axis from 0** flattens price lines | Round-tick price domain hugging the data; volume in its own chart (no dual axis) ✅ |
-| 15 | **Recharts in jsdom / React 19** | Recharts 3.x; `ResizeObserver` stub in Vitest setup; chart tests mock `ResponsiveContainer` with a fixed size ✅ |
-| 16 | **`VITE_*` env baked at build time** | Accepted for MVP (see deferrals) |
-| 17 | **Yahoo API is unofficial** (no SLA, ToS restrictions, may add cookie/crumb auth) | `IMarketDataProvider` abstraction; nightly live contract test; configurable host |
-| 18 | **GitHub Actions IPs throttled by Yahoo** | Live job non-blocking, single retry, clear reporting |
-| 19 | **Float32 artifacts** in Yahoo numbers | Parsed directly into `decimal` (verified exact); averaged at full precision; rounded once |
-| 20 | Volume overflow | Not an issue: `long` in .NET; JS safe to 9e15 vs ~1e11 max observed |
-| 21 | StrictMode double-fetch in dev | Expected; TanStack Query de-duplicates |
+| 1 | `decimal` keeps its scale in JSON (`382.7000`, `2910.0`) | `CanonicalDecimalJsonConverter`; raw-JSON tests ✅ |
+| 2 | HybridCache serializes values unless sealed + immutable; `TimeZoneInfo` isn't serializable | Cache entry stores the zone id / offset; marked immutable; round-trip tests ✅ |
+| 3 | CORS headers missing on error responses → opaque network error in the browser | CORS headers survive the exception handler; `Retry-After` exposed; tests ✅ |
+| 4 | macOS AirPlay occupies port 5000 | API on **5080**, Vite on 5173, Docker on 8080 |
+| 5 | HTTPS dev-certificate friction for reviewers | HTTP locally; TLS/HSTS belong at the reverse proxy (§2.7) |
+| 6 | No Vite proxy in `vite preview` | `preview.proxy` configured ✅ |
+| 7 | Retry amplification (frontend × backend; retrying 429 worsens throttling) | Backend owns the budget (≤ 2, honours `Retry-After`, breaker); frontend retries once on API-answered 502/504 ✅ |
+| 8 | Per-IP rate limit behind a proxy puts everyone in one bucket | Forwarded headers from the compose subnet only; per-client buckets and spoof resistance verified behind nginx ✅ |
+| 9 | Missing tzdata/ICU in slim containers → silent fixed-offset fallback | Full `aspnet` image (Ubuntu 24.04); fallback logs a warning; none seen in Docker ✅ |
+| 10 | Today's row is partial during market hours | UI footnote; round once after averaging ✅ |
+| 11 | Fewer days or bars than expected (holidays, half-days, new listings) | Nothing assumes fixed counts; short-history note; tests for short and empty series ✅ |
+| 12 | Special characters in symbols (`^`, `=`, `-`, `.`) | Escaped on both sides; tested both sides ✅ |
+| 13 | Client aborts logged as 500s | Handled as 499, debug log ✅ |
+| 14 | A price axis from 0 flattens the lines | Round-tick domain hugging the data; volume in its own chart ✅ |
+| 15 | Recharts in jsdom / React 19 | Recharts 3; `ResizeObserver` stub; fixed-size container in chart tests ✅ |
+| 16 | `VITE_*` values are baked in at build time | Accepted for the MVP (deferred) |
+| 17 | Yahoo's API is unofficial (no SLA, terms restrict use, may add auth) | `IMarketDataProvider` abstraction; scheduled live contract test; configurable host |
+| 18 | GitHub Actions IPs get throttled by Yahoo | Live job is non-blocking with one retry |
+| 19 | Float32 artefacts in Yahoo numbers (`381.239990234375`) | Parsed straight into `decimal`, averaged at full precision, rounded once ✅ |
+| 20 | Volume overflow | Not an issue: `long` in .NET; JS is exact to 9e15 vs ~1e11 observed |
+| 21 | React StrictMode double-fetch in development | Expected; TanStack Query de-duplicates |
 
 ---
 
-## 6. Setup & run, GitHub, CI
+## 6. Running, containers, GitHub and CI
 
-### 6.1 Two supported ways to run
-- **Native (dev loop)** — .NET 10 SDK + Node 24: `dotnet run` the API on **:5080** (HTTP profile),
-  `npm run dev` on :5173 with the Vite proxy. No certs, no env vars.
-- **Docker Compose (one command, reviewer-friendly)** — only Docker required, which removes the
-  ".NET 10 SDK not installed" failure mode.
-  - `api`: multi-stage `sdk:10.0` → `aspnet:10.0` (the full image — **Ubuntu 24.04** on .NET 10, not
-    the Debian assumed in planning — with tzdata + ICU; verified Asia/Tokyo resolves and no
-    fixed-offset fallback is logged). Restore runs from project + lock files only for layer caching
-    (`--locked-mode`). Non-root `app` user (uid 1654), port 8080, **not published to the host**.
-    Healthcheck uses bash's `/dev/tcp` (no curl/wget in the image).
-  - `web`: `node:24-alpine` build → **`nginx-unprivileged`** (non-root, :8080) serving the SPA and
-    reverse-proxying `/api` → `api:8080` (same origin, no CORS — mirrors a production topology).
-    Security headers (CSP, nosniff, frame-deny, referrer policy) from one included snippet, since
-    nginx doesn't inherit `add_header` into locations that set their own; hashed assets cached for a
-    year, `index.html` `no-cache`; gzip. CSP allows inline *styles* only (React/Recharts style
-    attributes) — verified no CSP violations in the browser.
-  - Both containers: `read_only` root filesystem + tmpfs `/tmp`, `cap_drop: [ALL]`,
-    `no-new-privileges` (verified: `CapEff 0`, `NoNewPrivs 1`). `web` waits on `api` healthy.
-  - Fixed compose subnet (`172.28.0.0/24`) so the API trusts `X-Forwarded-For` only from that
-    network. **Verified**: with the limit lowered to 3/min, the host client got 429 on its 4th
-    request, spoofing `X-Forwarded-For` didn't help (nginx appends the real IP; the API reads the
-    last hop), and a second client (inside the `web` container) still had its own allowance.
-  - Base images pinned by **tag + digest**; Dependabot (`docker` ecosystem) bumps both.
-- No Makefile/task runner: not available on Windows by default; explicit README commands are clearer.
+### 6.1 Two ways to run
+- **Native** (.NET 10 SDK + Node 24): `dotnet run` the API on :5080, `npm run dev` on :5173 with
+  the Vite proxy. No certificates, no environment variables.
+- **Docker Compose** (`docker compose up --build`, then http://localhost:8080): only Docker
+  needed, which removes the "SDK not installed" failure mode.
+- No Makefile: not available on Windows by default; explicit commands in the README are clearer.
 
-### 6.2 GitHub
-- **Public repo**, default branch **`main`**. Conventional Commits. **PR per milestone.**
-- **Dependabot**: weekly, grouped per ecosystem (nuget, npm, github-actions, dotnet-sdk; docker
-  added with the Dockerfiles).
-- **CodeQL advanced setup** (`.github/workflows/codeql.yml`; C#, TypeScript, Actions;
-  `security-and-quality` queries; C# uses `build-mode: none`). Runs on **every** PR, pushes to
-  `main` and weekly. See the code-scanning note below for why not default setup.
+### 6.2 Containers
+- **`api`**: multi-stage `sdk:10.0` → `aspnet:10.0`. The full runtime image (on .NET 10 that's
+  **Ubuntu 24.04**, not the Debian assumed in planning) ships tzdata and ICU; Asia/Tokyo resolves
+  with no fallback warning. Restore runs from project and lock files first for layer caching.
+  Non-root (uid 1654), port 8080, **not published to the host**; healthcheck via bash `/dev/tcp`.
+- **`web`**: `node:24-alpine` build → **unprivileged nginx** (non-root, :8080) serving the SPA and
+  proxying `/api` to the API — one origin, no CORS. Security headers (CSP, nosniff, frame deny,
+  referrer policy) come from one included snippet, because nginx doesn't inherit `add_header` into
+  locations that set their own. Hashed assets cached for a year, `index.html` never cached, gzip.
+  The CSP allows inline *styles* only (React/Recharts style attributes); no violations in the browser.
+- **Hardening**: read-only root filesystems with tmpfs `/tmp`, all Linux capabilities dropped,
+  `no-new-privileges` (verified: `CapEff 0`, `NoNewPrivs 1`). `web` waits for `api` to be healthy.
+- **Forwarded headers**: a fixed compose subnet (`172.28.0.0/24`) is the only trusted proxy network.
+  Verified with the limit lowered to 3/min: the host client got 429 on its 4th request; a spoofed
+  `X-Forwarded-For` didn't help (nginx appends the real IP and the API reads that last hop); a second
+  client kept its own allowance.
+- Base images pinned by **tag and digest**; Dependabot bumps both.
 
-#### Branch protection — a repository **ruleset** on `main`, kept as code
-- Defined in `.github/rulesets/main.json` and applied with
-  `gh api -X POST repos/{owner}/{repo}/rulesets --input .github/rulesets/main.json` (use `PUT
-  …/rulesets/{id}` to update). Rulesets over classic branch protection: auditable bypasses,
-  layerable, visible to readers of a public repo, and reproducible from a checked-in file.
+### 6.3 GitHub
+- **Public repo**, default branch `main`, Conventional Commits, **a PR per milestone**.
+- **Process**: the author reviews every change locally before it's committed; Claude commits, pushes
+  and opens PRs only when asked. The assignment PDF is git-ignored (a third-party document).
+- **Merge settings**: merge commits off; **squash** (PR title + body) for Dependabot and small PRs;
+  **rebase** for milestone PRs so their individual commits stay visible on `main`. Head branches
+  are deleted on merge; "update branch" is suggested; auto-merge is off.
+- **Dependabot**: weekly, grouped per ecosystem — nuget, npm, github-actions, dotnet-sdk, docker.
+  Major updates to `@types/node` (must match the Node 24 runtime) and `typescript` (TS 7 is a new
+  native compiler needing deliberate verification) are ignored.
+- **CodeQL advanced setup** (`codeql.yml`; C#, TypeScript, Actions; `security-and-quality`
+  queries; C# `build-mode: none`) on every PR, every push to `main` and weekly. Its findings are
+  fixed rather than dismissed (e.g. undisposed test objects, float multiplication, `Path.Combine`).
+
+**Branch protection: a repository ruleset kept as code** (`.github/rulesets/main.json`, applied with
+`gh api … /rulesets`). Rulesets over classic protection: auditable, layerable, visible to readers of
+a public repo, reproducible from a file.
 
 | Rule | Setting | Why |
 |---|---|---|
-| Restrict deletions / block force pushes | on | `main` can't be deleted or have history rewritten |
-| Require a pull request | on, **0 approvals** | Solo repo — GitHub doesn't allow approving your own PR, so ≥1 would force a bypass on every merge (see deferrals for team settings) |
-| Require conversation resolution | on | Open review threads (incl. AI code-review comments) block merge |
-| Required status checks `backend`, `frontend` | on, **pinned to the GitHub Actions app** (integration 15368) | A status posted by another integration under the same name can't satisfy the check; `docker` added in milestone 6 |
-| Require branches up to date | on | PRs are tested against current `main`, not a stale base |
-| Require linear history | on | Pairs with the merge methods below |
-| Code scanning (CodeQL) | high-or-higher security alerts / errors block merge | Requires CodeQL results on every PR — hence advanced setup (below) |
-| Bypass list | **empty** | Rules apply to the admin too; changing the ruleset is itself audited |
+| Restrict deletion, block force pushes | on | `main` can't be deleted or rewritten |
+| Require a pull request | **0 approvals**, conversations must be resolved | Solo repo — GitHub doesn't allow approving your own PR |
+| Required checks `backend`, `frontend`, `docker` | **pinned to the GitHub Actions app**, branch must be up to date | Another integration can't satisfy them; PRs are tested against current `main` |
+| Linear history | on | Matches the merge settings |
+| Code scanning | CodeQL high+ security alerts or errors block merge | Requires CodeQL results on every PR (see lesson) |
+| Bypass list | empty | Rules apply to the admin too; edits to the ruleset are audited |
 
-- `require_extra_approval_for_unattributed_changes` is a newer, undocumented ruleset parameter that
-  GitHub defaults to `true`; left at the default (our commits are attributed) and verified it does
-  not block normal merges (PR #5 merged under it).
+- GitHub adds an undocumented `require_extra_approval_for_unattributed_changes` parameter (default
+  `true`); left at the default — our commits are attributed, and merges aren't blocked by it.
+- **Lesson — the code-scanning gate and CodeQL default setup.** With *default* setup, CodeQL skipped
+  a docs-only PR, so the code-scanning rule waited forever and blocked it. Fix: rule temporarily
+  removed, CodeQL moved to an advanced-setup workflow that runs on every PR, default setup turned
+  off (they can't coexist), rule restored. A merge gate has to be tried against every kind of PR
+  before it counts as done.
 
-**Lesson — code-scanning gate vs. CodeQL default setup.** The first version of the ruleset used
-CodeQL *default* setup. Default setup did not analyse PR #5 (JSON/Markdown only), so the
-`code_scanning` rule waited for results that never came and **blocked a docs-only PR
-indefinitely**. Fix: rule temporarily removed, CodeQL moved to an advanced-setup workflow that
-runs on every PR, default setup disabled (the two can't coexist), and the rule re-added once the
-workflow had produced results. Takeaway: a merge gate has to be exercised against *every kind*
-of PR (code, docs, config, Dependabot) before it's considered done.
+### 6.4 CI (`ci.yml`: every PR and push to `main`)
+- Read-only token; concurrency cancels superseded PR runs; **actions pinned to commit SHAs**.
+- **backend**: SDK from `global.json`, NuGet cache, `restore --locked-mode`, `dotnet format
+  --verify-no-changes`, Release build (warnings as errors), tests without `Category=Live` under
+  `TZ=Asia/Tokyo` with coverage; coverage summary (ReportGenerator, pinned in `dotnet-tools.json`)
+  in the job summary; TRX and coverage artifacts.
+- **frontend**: Node from `.nvmrc`, npm cache, `npm ci`, lint, format check, typecheck, tests with
+  coverage, build.
+- **docker**: build, start with `--wait`, smoke test through nginx (`/healthz`, `index.html`, and an
+  invalid symbol the API rejects with 400 — proves nginx → API without calling Yahoo), logs on
+  failure, tear down.
+- **No path filters**: a path-filtered *required* check leaves PRs stuck "waiting for status", and
+  all three jobs are fast.
 
-#### Merge settings
-- **Merge commits off** (linear history). **Squash** (PR title + body) for Dependabot/fix-up PRs;
-  **rebase** for milestone PRs so the curated test-first commit sequence stays visible on `main`.
-- Delete head branches on merge; "suggest updating PR branches" on; auto-merge off.
-
-### 6.3 CI (`.github/workflows/ci.yml`, PRs + pushes to `main`)
-- `permissions: contents: read`; `concurrency` with `cancel-in-progress`; **actions pinned to
-  commit SHAs** (supply-chain hardening; Dependabot keeps them current).
-- **backend**: setup-dotnet from `global.json` + NuGet cache → `restore --locked-mode`
-  (`packages.lock.json` enabled) → `dotnet format --verify-no-changes` → Release build
-  (warnings as errors) → tests excluding `Category=Live`, with coverage, under `TZ=Asia/Tokyo`
-  → ReportGenerator (pinned as a local tool in `dotnet-tools.json`) summary to the job summary; TRX + coverage artifacts.
-- **frontend**: setup-node from `.nvmrc` + npm cache → `npm ci` → lint → typecheck → tests with
-  coverage (under `TZ=America/Los_Angeles`) → build.
-- **docker**: `compose build` → `up -d --wait` → smoke test through nginx (`/healthz`, `index.html`,
-  and an invalid symbol that the API itself rejects with 400 — proves nginx → API without calling
-  Yahoo) → logs on failure → `down`.
-- **No path filters**: path-filtered *required* checks leave PRs stuck "waiting for status"; both
-  jobs are fast enough to always run.
-
-### 6.4 Live contract workflow (`live-contract.yml`)
-- Weekdays at 15:00 UTC (during the US session, so in-session responses are exercised — changed
-  from "nightly") + `workflow_dispatch`; runs the explicit `Category=Live` tests
-  (`-- --explicit only`) against real Yahoo with one retry.
-- **Not a required check** — never blocks merges; failure notifies the owner (early warning for
-  upstream changes; tolerant of runner-IP throttling).
-
-### 6.5 Build order (one PR each)
-1. Scaffold — `global.json`, `.editorconfig`, `.gitattributes`, empty solution + Vite app, CI green
-   on empty projects.
-2. Backend core — domain records, `DailyAggregator`, service (test-first).
-3. Yahoo infrastructure — client, DTOs, filters, error mapping, resilience, cache, fixture tests.
-4. API host — endpoint, validation, ProblemDetails, CORS, rate limiting, OpenAPI, health,
-   integration tests.
-5. Frontend — API layer, hook, form, table, chart, states, tests.
-6. Docker/Compose + docker CI job + live contract workflow.
-7. Docs — README, `PROMPT_LOG.md` (with author rationale blocks), manual-changes section.
+### 6.5 Live contract workflow (`live-contract.yml`)
+- Weekdays 15:00 UTC (during the US session, so in-session responses are exercised) and on demand;
+  runs the explicit live tests with one retry.
+- **Never a required check**: Yahoo is outside our control and throttles shared CI IPs, so a red run
+  means "look", not "block merges".
 
 ---
 
-## 7. Deliberate deferrals
+## 7. Delivery history
 
-Things consciously **not** built for the MVP, why, and what would trigger revisiting them.
+| PR | Milestone |
+|---|---|
+| #1 | Scaffold: solution, Vite app, CI, repo config |
+| #5 | Branch protection ruleset, merge settings, CodeQL |
+| #6 | Backend core: `StockSymbol`, domain, aggregation (test-first), CodeQL advanced setup |
+| #7 | Yahoo infrastructure: provider, cleaning filters, caching, fixtures |
+| #8 | API host: endpoint, error mapping, CORS, rate limiting, OpenAPI |
+| #9 | Frontend: data layer, charts, table, states |
+| #10 | Docker Compose stack, docker CI job, live contract workflow |
+| — | Documentation: README, `PROMPT_LOG.md` |
+
+---
+
+## 8. Deliberate deferrals
+
+Consciously **not** built for the MVP, why, and what would trigger revisiting.
 
 | Deferred | Why not now | Revisit when |
 |---|---|---|
-| Separate `Domain` project | Domain is 3 records + a pure function; a project would be ceremony | Domain gains real behaviour (indicators, portfolios, corporate actions) |
-| `Result<T>` across layers | Boilerplate without `?` propagation; global handler needed anyway | Richer validation / multiple failure types per call |
-| Metadata in the response (currency, name, timezone) | Brief mandates the bare-array format | Add a separate `/stocks/{symbol}` metadata endpoint |
-| Currency display in the UI | Not in the contract (see above); GBp vs USD makes guessing wrong | Metadata endpoint exists |
-| Configurable `range` / `interval` | Brief fixes "last month"; 15m data limited to 60 days | Product asks for other windows — use a validated allow-list |
-| Extended-hours data (`includePrePost`) | Mostly zero-volume bars that distort averages | Explicit product need; would be a separate, opt-in series |
-| Distributed cache (Redis) | Single instance; in-memory `HybridCache` suffices | Horizontal scale-out — config-only switch |
-| Serilog / OpenTelemetry exporters | Built-in `ILogger` structured logging is enough for MVP | Deployed to an environment with a log/trace backend |
-| OpenAPI-generated TS client | Adds codegen to build/CI for a single endpoint | ~3+ endpoints, or a second consumer of the API |
-| TanStack Table (sorting/paging) | ~22 rows; semantic `<table>` suffices | Larger datasets or interactive table needs |
-| Client-side router | Single view; URL search params cover shareable state | A second page/route is added |
-| Component library (MUI etc.) | Bundle weight for one view; Tailwind covers it | Design system requirements emerge |
-| Light/dark theme toggle | Follows the OS setting (`prefers-color-scheme`); a toggle adds state and a persisted preference | Users ask for it |
-| MSW in the browser (dev mock mode) | Tests use MSW in Node only; postinstall worker copy denied | Frontend work needs to proceed without the backend |
-| Authentication / API keys | Public read-only data; per-IP rate limit protects upstream quota | Any user-specific data or paid upstream |
-| Playwright end-to-end tests | Integration tests on both sides of the HTTP boundary cover the contract; E2E adds CI complexity (both apps + stubbed upstream) | Multiple user flows / pages |
+| Separate `Domain` project | A few records and a pure function | The domain gains real behaviour (indicators, portfolios, corporate actions) |
+| `Result<T>` across layers | Boilerplate without `?` propagation; a global handler is needed anyway | Richer validation or several failure types per call |
+| Metadata (currency, name, timezone, listing date) | The brief fixes the bare-array format | Add a separate `/stocks/{symbol}` endpoint |
+| Currency display in the UI | Not in the contract; guessing is wrong (VOD.L is in pence) | The metadata endpoint exists |
+| Configurable range / interval | The brief fixes "last month"; 15m data is limited to 60 days | Product needs other windows (validated allow-list) |
+| Extended-hours data | Mostly zero-volume bars that distort averages | An explicit need; a separate opt-in series |
+| Distributed cache (Redis) | Single instance; in-memory HybridCache suffices | Scaling out to several instances |
+| Serilog / OpenTelemetry exporters | Built-in structured `ILogger` is enough | Deployed somewhere with a log/trace backend |
+| OpenAPI-generated TypeScript client | Codegen in build/CI for one endpoint | ~3+ endpoints or a second API consumer |
+| TanStack Table (sorting, paging) | ~22 rows | Larger or interactive tables |
+| Client-side router | One view; URL search params cover shareable state | A second page |
+| Component library (MUI etc.) | Bundle weight for one view | Design-system requirements |
+| Light/dark toggle | Follows the OS setting | Users ask for it |
+| MSW in the browser (mock mode) | Tests use MSW in Node only | Frontend work must proceed without the backend |
+| Authentication / API keys | Public read-only data; rate limiting protects the upstream quota | User-specific data or a paid upstream |
+| Playwright end-to-end tests | Integration tests on both sides of the HTTP boundary cover the contract | Several user flows or pages |
 | Mutation testing (Stryker) | Heavyweight for an MVP | Test-suite quality becomes a concern |
-| Hard coverage thresholds | Encourage coverage-chasing tests; coverage is reported instead | Team agrees on a meaningful gate (e.g. Application/Infrastructure only) |
-| Runtime frontend config (`config.json`) | `VITE_*` build-time env is fine for a single deployment | Build-once / deploy-to-many-environments pipeline |
-| .NET Aspire orchestration | Extra SDK workload for reviewers; Compose already gives one-command run | Multiple services / need for the Aspire dashboard & telemetry |
-| CD / deployment, image publishing (GHCR) | No target environment | A hosting target exists — publish images on tags |
-| Release versioning / changelog automation | Single MVP release | Regular releases (e.g. release-please) |
-| Required PR approvals, stale-review dismissal, CODEOWNERS review | Solo repo — self-approval isn't possible | Second contributor joins: 1+ approvals, dismiss stale, require code owners |
-| Required signed commits | GitHub's "rebase and merge" produces unsigned commits, conflicting with the merge strategy; optional SSH signing locally | Team policy requires provenance — switch to squash-only + required signatures |
-| Dependabot auto-merge | Want eyes on dependency updates while the project is young | Stable test suite — auto-merge green patch updates |
+| Coverage thresholds | Encourage coverage-chasing tests; coverage is reported | The team agrees on a meaningful gate |
+| Runtime frontend config | Build-time `VITE_*` is fine for one deployment | Build once, deploy to many environments |
+| .NET Aspire | Extra SDK workload; Compose already gives a one-command run | More services, or a need for its dashboard |
+| CD and image publishing (GHCR) | No target environment | A hosting target exists |
+| Release versioning / changelog automation | A single MVP release | Regular releases |
+| PR approvals, stale-review dismissal, CODEOWNERS | Solo repo | A second contributor joins |
+| Required signed commits | GitHub's rebase-merge produces unsigned commits | Policy requires provenance (switch to squash-only) |
+| Dependabot auto-merge | Updates reviewed by hand while the project is young | The test suite has proven stable |
 
 ---
 
-## 8. Open items / verification
+## 9. Open items
 
-- [ ] Verify the trailing-snapshot rule against a **live (in-session)** Yahoo response — all probes
-      so far were post-close (weekend).
-- [ ] Verify the CodeQL code-scanning merge gate on a **docs-only PR** (PR #6 contained code, so it
-      didn't prove the deadlock fix).
-- [x] Forwarded-headers trust verified behind nginx in Docker (see §6.1).
-- [ ] Add `docker` to the ruleset's required checks once the job has run on a PR.
-- [ ] Retry behaviour of the resilience pipeline is configured but not exercised by a test (the
-      standard handler's exponential backoff would make it slow); covered by library tests and the
-      live contract test.
+- [ ] Verify the trailing-snapshot rule on a **live in-session** response (probes were post-close;
+      the weekday live workflow now runs during the US session).
+- [ ] Verify the CodeQL merge gate on a **docs-only PR** (every PR since the fix contained code).
+- [ ] The resilience pipeline's retry behaviour is configured but not exercised by a test (the
+      standard backoff would make it slow); covered by the library's own tests and the live tests.
 
 ---
 
-## 9. Manual changes (outside AI)
+## 10. Manual changes (outside AI)
 
-Changes made directly by the author, detected when reviewing merged code. Rationale to be filled
-in by the author.
+Changes made directly by the author, detected when reviewing merged code.
 
 | Where | Change | Rationale |
 |---|---|---|
 | `StockSymbol.MaxLength` (PR #6) | 20 → **14** | _(author to fill in)_ |
-| `DailySummaryAggregator.Aggregate` (PR #6) | Added XML `<summary>` | _(author to fill in)_ |
+| `DailySummaryAggregator.Aggregate` (PR #6) | Added an XML `<summary>` | _(author to fill in)_ |
 
 ---
 
-## 10. End-of-project checklist
+## 11. End-of-project checklist
 
-- [ ] **Generate `PROMPT_LOG.md`** from this session's prompts. For each entry include: the prompt,
-      what it was trying to achieve, what was kept/changed/rejected from the AI output and why —
-      **plus an empty `My rationale:` block beside each prompt for the author to fill in manually.**
-- [ ] Write README "Design & Trade-offs" section from this file (sections 1–7).
-- [ ] Document any manual (non-AI) changes and their reasoning (deliverable #4) — see §9.
+- [ ] Generate `PROMPT_LOG.md` from the session's prompts — for each: the prompt, what it aimed to
+      achieve, what was kept/changed/rejected and why, plus an empty **`My rationale:`** block for
+      the author.
+- [ ] Write the README (setup and run for both paths, API reference, design & trade-offs from this
+      file).
+- [ ] Author fills in the rationale for the manual changes (§10).
