@@ -87,6 +87,18 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - Therefore `YahooMarketDataProvider` applies them and returns **clean bars**; the Application
   layer never knows the upstream was messy. Each filter is still its own small class
   (`IBarFilter`) with focused unit tests.
+- Consequence for the domain model: `IntradayBar` has **non-nullable** OHLC/volume. Incomplete
+  bars are dropped in Infrastructure before mapping, so "a bar is complete" is an invariant the
+  type system enforces rather than something the aggregator must re-check.
+
+### 2.2a `StockSymbol` value object (domain primitive)
+- Symbols are parsed once at the edge into a `StockSymbol` (trim, upper-case, max 20 chars,
+  `[A-Z0-9.\-^=]`) and passed as that type everywhere after — no raw strings reach the provider,
+  and validation lives in one place shared by the endpoint and any future callers. Avoids
+  primitive obsession; equality is by normalised value (`tsla` == `TSLA`).
+- `DailySummaryAggregator` is a **static pure function** (no I/O, no state): there is nothing to
+  mock or swap, so an interface would be ceremony. `DailySummaryService` (behind
+  `IDailySummaryService`) orchestrates provider → aggregator and is the seam the API depends on.
 
 ### 2.3 Error handling: hybrid (exceptions for upstream failures, values for validation)
 - **Input validation** (bad symbol format) is an expected user mistake → handled as a value at
@@ -245,8 +257,16 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
   hit / stampede / negative caching.
 - **Live Yahoo contract test** tagged `Category=Live`, **excluded from PR CI**, run nightly +
   on demand as an early warning for upstream shape changes.
-- Coverage via coverlet + ReportGenerator — **reported, not gated** (thresholds encourage
+- Coverage via MTP CodeCoverage + ReportGenerator — **reported, not gated** (thresholds encourage
   coverage-chasing tests).
+  - Each test project writes to its **own** `TestResults/` (set via
+    `TestingPlatformCommandLineArguments` in `tests/Directory.Build.props`). With a shared results
+    directory, a second test project silently **overwrote** the first's `coverage.cobertura.xml`
+    (found when Application.Tests was added).
+  - `backend/coverage.settings.xml` excludes compiler/source-generated code (OpenAPI and Regex
+    source generators, `[CompilerGenerated]`) so the number reflects hand-written code only
+    (the overall figure went from 26% to 95.6% line / 100% branch once generated code was
+    excluded).
 
 ### 4.3 Frontend: Vitest + React Testing Library + user-event + MSW
 - MSW intercepts at `fetch`, so tests exercise the real httpClient → zod → TanStack Query →
@@ -307,7 +327,9 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 - **Public repo**, default branch **`main`**. Conventional Commits. **PR per milestone.**
 - **Dependabot**: weekly, grouped per ecosystem (nuget, npm, github-actions, dotnet-sdk; docker
   added with the Dockerfiles).
-- **CodeQL default setup** (C#, TypeScript, Actions).
+- **CodeQL advanced setup** (`.github/workflows/codeql.yml`; C#, TypeScript, Actions;
+  `security-and-quality` queries; C# uses `build-mode: none`). Runs on **every** PR, pushes to
+  `main` and weekly. See the code-scanning note below for why not default setup.
 
 #### Branch protection — a repository **ruleset** on `main`, kept as code
 - Defined in `.github/rulesets/main.json` and applied with
@@ -323,12 +345,20 @@ symbols (US, Toronto, London, Frankfurt, Tokyo, Hong Kong, India, Sydney, crypto
 | Required status checks `backend`, `frontend` | on, **pinned to the GitHub Actions app** (integration 15368) | A status posted by another integration under the same name can't satisfy the check; `docker` added in milestone 6 |
 | Require branches up to date | on | PRs are tested against current `main`, not a stale base |
 | Require linear history | on | Pairs with the merge methods below |
-| Code scanning (CodeQL) | high-or-higher security alerts / errors block merge | Added after CodeQL's first analysis completed |
+| Code scanning (CodeQL) | high-or-higher security alerts / errors block merge | Requires CodeQL results on every PR — hence advanced setup (below) |
 | Bypass list | **empty** | Rules apply to the admin too; changing the ruleset is itself audited |
 
 - `require_extra_approval_for_unattributed_changes` is a newer, undocumented ruleset parameter that
   GitHub defaults to `true`; left at the default (our commits are attributed) and verified it does
-  not block normal merges.
+  not block normal merges (PR #5 merged under it).
+
+**Lesson — code-scanning gate vs. CodeQL default setup.** The first version of the ruleset used
+CodeQL *default* setup. Default setup did not analyse PR #5 (JSON/Markdown only), so the
+`code_scanning` rule waited for results that never came and **blocked a docs-only PR
+indefinitely**. Fix: rule temporarily removed, CodeQL moved to an advanced-setup workflow that
+runs on every PR, default setup disabled (the two can't coexist), and the rule re-added once the
+workflow had produced results. Takeaway: a merge gate has to be exercised against *every kind*
+of PR (code, docs, config, Dependabot) before it's considered done.
 
 #### Merge settings
 - **Merge commits off** (linear history). **Squash** (PR title + body) for Dependabot/fix-up PRs;
