@@ -7,7 +7,7 @@ internal static class RawBars
     private static readonly DateTimeOffset Start = new(2026, 10, 9, 13, 30, 0, TimeSpan.Zero);
 
     public static RawBar Bar(int index, decimal? open, decimal? high, decimal? low, decimal? close, long? volume) =>
-        new(Start.AddMinutes(15 * index), open, high, low, close, volume);
+        new(Start.AddMinutes(15d * index), open, high, low, close, volume);
 
     public static RawBar Trading(int index) => Bar(index, 10m, 12m, 9m, 11m, 1_000);
 

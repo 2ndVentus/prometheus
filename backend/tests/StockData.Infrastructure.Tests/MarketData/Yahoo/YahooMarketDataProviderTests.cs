@@ -12,17 +12,26 @@ using static StockData.Infrastructure.Tests.TestSupport.YahooFixtures;
 
 namespace StockData.Infrastructure.Tests.MarketData.Yahoo;
 
-public sealed class YahooMarketDataProviderTests
+public sealed class YahooMarketDataProviderTests : IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 11, 12, 0, 0, TimeSpan.Zero);
     private readonly FakeTimeProvider _time = new(Now);
+    private readonly List<HttpClient> _clients = [];
+
+    public void Dispose() => _clients.ForEach(client => client.Dispose());
 
     private YahooMarketDataProvider CreateProvider(StubHttpMessageHandler handler) => new(
-        new HttpClient(handler) { BaseAddress = new Uri("https://query1.finance.yahoo.com/") },
+        Track(new HttpClient(handler) { BaseAddress = new Uri("https://query1.finance.yahoo.com/") }),
         new YahooChartMapper([new TrailingSnapshotBarFilter(), new IncompleteBarFilter()], NullLogger<YahooChartMapper>.Instance),
         Options.Create(new YahooFinanceOptions()),
         _time,
         NullLogger<YahooMarketDataProvider>.Instance);
+
+    private HttpClient Track(HttpClient client)
+    {
+        _clients.Add(client);
+        return client;
+    }
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 

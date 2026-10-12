@@ -16,7 +16,7 @@ internal static class YahooFixtures
     public const string RateLimited = "rate-limited.txt";
 
     public static string Read(string name) =>
-        File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "Yahoo", name));
+        File.ReadAllText(Path.Join(AppContext.BaseDirectory, "Fixtures", "Yahoo", name));
 
     public static YahooChartResult Result(string name) =>
         JsonSerializer.Deserialize(Read(name), YahooJsonContext.Default.YahooChartResponse)!.Chart!.Result![0];
