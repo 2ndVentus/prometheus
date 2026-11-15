@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build -----------------------------------------------------------------------------------
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0@sha256:65f3c7c6a25a239ab3e6719f2896147e7b68242ff2d8818dd70498bde6ef8bea AS build
 WORKDIR /src
 
 # Restore first, from project files and lock files only, so the layer is cached until a
@@ -18,7 +18,7 @@ RUN dotnet publish src/StockData.Api/StockData.Api.csproj -c Release --no-restor
 # ---- runtime ---------------------------------------------------------------------------------
 # The full (not chiseled/alpine) ASP.NET image: it ships ICU and tzdata, which exchange-timezone
 # grouping needs (e.g. Asia/Tokyo). Without them the API falls back to a fixed UTC offset.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:222759b391a1aaf241166672c8f99b2d4ada452e7b5319f3c6e8f265a37b5ad4 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:11.0@sha256:bc0d6653979efba491ab3d6f589d691f96c309c3c3ef81325efa6978e7b7f242 AS runtime
 WORKDIR /app
 COPY --from=build /app .
 
